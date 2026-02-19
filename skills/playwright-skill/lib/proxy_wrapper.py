@@ -11,6 +11,8 @@ import socket
 import threading
 import base64
 import os
+import shutil
+import subprocess
 import time
 from urllib.parse import urlparse
 
@@ -18,6 +20,7 @@ from urllib.parse import urlparse
 LOCAL_PROXY_PORT = 18080
 _wrapper_thread = None
 _wrapper_server = None
+_xvfb_process = None
 
 
 def is_claude_code_web_environment() -> bool:
@@ -218,6 +221,99 @@ def start_proxy_wrapper(proxy_config, verbose=True):
     return {'server': f'http://127.0.0.1:{LOCAL_PROXY_PORT}'}
 
 
+def _has_display() -> bool:
+    """Check if a working display is available."""
+    display = os.environ.get('DISPLAY')
+    return bool(display)
+
+
+def _find_free_display() -> int:
+    """Find an unused X display number."""
+    for display_num in range(99, 200):
+        lock_file = f'/tmp/.X{display_num}-lock'
+        sock_file = f'/tmp/.X11-unix/X{display_num}'
+        if not os.path.exists(lock_file) and not os.path.exists(sock_file):
+            return display_num
+    return 99
+
+
+def ensure_virtual_display(verbose=True) -> bool:
+    """
+    Start Xvfb virtual display if no display is available.
+
+    Used to enable headed browser mode (headless=False) in environments
+    without a physical display (e.g., Claude Code web, CI/CD).
+    Headed mode is preferred for anti-bot evasion since some detection
+    systems fingerprint headless browsers.
+
+    Returns:
+        True if a display is available (existing or newly started)
+    """
+    global _xvfb_process
+
+    # Already have a display
+    if _has_display():
+        if verbose:
+            print(f"   ✅ Using existing display: {os.environ['DISPLAY']}")
+        return True
+
+    # Already started Xvfb
+    if _xvfb_process and _xvfb_process.poll() is None:
+        if verbose:
+            print(f"   ✅ Xvfb already running on {os.environ.get('DISPLAY', ':99')}")
+        return True
+
+    # Check if Xvfb is available
+    if not shutil.which('Xvfb'):
+        if verbose:
+            print("   ⚠️  Xvfb not available, falling back to headless mode")
+        return False
+
+    display_num = _find_free_display()
+    display = f':{display_num}'
+
+    try:
+        _xvfb_process = subprocess.Popen(
+            ['Xvfb', display, '-screen', '0', '1920x1080x24', '-ac', '-nolisten', 'tcp'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        # Give Xvfb a moment to start
+        time.sleep(0.5)
+
+        if _xvfb_process.poll() is not None:
+            if verbose:
+                print("   ⚠️  Xvfb failed to start, falling back to headless mode")
+            _xvfb_process = None
+            return False
+
+        os.environ['DISPLAY'] = display
+        if verbose:
+            print(f"   ✅ Started Xvfb virtual display on {display}")
+        return True
+
+    except Exception as e:
+        if verbose:
+            print(f"   ⚠️  Failed to start Xvfb: {e}, falling back to headless mode")
+        _xvfb_process = None
+        return False
+
+
+def stop_virtual_display():
+    """Stop the Xvfb virtual display if we started one."""
+    global _xvfb_process
+    if _xvfb_process:
+        try:
+            _xvfb_process.terminate()
+            _xvfb_process.wait(timeout=5)
+        except Exception:
+            try:
+                _xvfb_process.kill()
+            except Exception:
+                pass
+        _xvfb_process = None
+
+
 def get_browser_config(headless=None, verbose=True, use_chrome=True):
     """
     Get browser configuration for current environment.
@@ -270,14 +366,31 @@ def get_browser_config(headless=None, verbose=True, use_chrome=True):
             if verbose:
                 print("   ✅ Proxy authentication configured")
 
-        # Force headless in web environment unless explicitly overridden
-        if headless is None:
+        # Determine headless mode for web environment
+        if headless is False:
+            # User explicitly wants headed mode - use Xvfb for virtual display
+            # Headed mode is better for anti-bot evasion (some detectors fingerprint headless)
+            has_display = ensure_virtual_display(verbose=verbose)
+            config['launch_options']['headless'] = not has_display
+            config['xvfb_used'] = has_display
+            if has_display:
+                # Explicitly pass DISPLAY to Chrome via env - Playwright's process
+                # spawning may not inherit os.environ changes made after startup
+                config['launch_options']['env'] = {**os.environ}
+                if verbose:
+                    print("   🎯 Headed mode via Xvfb (better anti-bot evasion)")
+        elif headless is None:
             config['launch_options']['headless'] = True
+            config['xvfb_used'] = False
             if verbose:
-                print("   ✅ Headless mode enabled (web environment)")
+                print("   ✅ Headless mode enabled (web environment default)")
         else:
-            config['launch_options']['headless'] = headless
+            config['launch_options']['headless'] = True
+            config['xvfb_used'] = False
+            if verbose:
+                print("   ✅ Headless mode enabled")
     else:
+        config['xvfb_used'] = False
         # Not in Claude Code web - use default settings
         if headless is not None:
             config['launch_options']['headless'] = headless
@@ -307,4 +420,6 @@ __all__ = [
     'get_browser_config',
     'start_proxy_wrapper',
     'stop_proxy_wrapper',
+    'ensure_virtual_display',
+    'stop_virtual_display',
 ]

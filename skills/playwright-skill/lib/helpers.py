@@ -629,6 +629,8 @@ try:
         get_browser_config,
         start_proxy_wrapper,
         stop_proxy_wrapper,
+        ensure_virtual_display,
+        stop_virtual_display,
     )
     _PROXY_WRAPPER_AVAILABLE = True
 except ImportError:
@@ -644,7 +646,8 @@ except ImportError:
         config = {
             'launch_options': {'args': ['--no-sandbox', '--disable-setuid-sandbox']},
             'context_options': {},
-            'proxy_wrapper_used': False
+            'proxy_wrapper_used': False,
+            'xvfb_used': False
         }
         if use_chrome:
             config['launch_options']['channel'] = 'chrome'
@@ -656,6 +659,12 @@ except ImportError:
         return None
 
     def stop_proxy_wrapper():
+        pass
+
+    def ensure_virtual_display(verbose=True):
+        return False
+
+    def stop_virtual_display():
         pass
 
 
@@ -684,4 +693,6 @@ __all__ = [
     'get_browser_config',
     'start_proxy_wrapper',
     'stop_proxy_wrapper',
+    'ensure_virtual_display',
+    'stop_virtual_display',
 ]

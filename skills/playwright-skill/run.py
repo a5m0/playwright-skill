@@ -65,7 +65,7 @@ def install_patchright():
         if vendor_wheel:
             print("  Installing patched patchright from vendor wheel...")
             installer_args = (
-                ["uv", "pip", "install", vendor_wheel, "--reinstall"]
+                ["uv", "pip", "install", "--system", vendor_wheel, "--reinstall"]
                 if use_uv
                 else [
                     sys.executable,
@@ -80,7 +80,7 @@ def install_patchright():
         elif use_uv:
             print("  Using uv for installation (no vendor wheel, may be unpatched)...")
             subprocess.run(
-                ["uv", "pip", "install", "patchright"], check=True, cwd=SKILL_DIR
+                ["uv", "pip", "install", "--system", "patchright"], check=True, cwd=SKILL_DIR
             )
         else:
             print("  Using pip for installation (no vendor wheel, may be unpatched)...")
@@ -149,8 +149,45 @@ def cleanup_old_temp_files():
         pass  # Ignore directory read errors
 
 
+def _indent_code(code, spaces):
+    """Indent each line of code by the given number of spaces."""
+    indent = ' ' * spaces
+    lines = code.split('\n')
+    # Strip common leading whitespace first, then re-indent
+    import textwrap
+    dedented = textwrap.dedent(code)
+    return '\n'.join(indent + line if line.strip() else line
+                     for line in dedented.split('\n'))
+
+
+def _needs_auto_browser(code):
+    """Check if inline code needs auto-configured browser/page.
+
+    Returns True when the code uses 'page' or 'browser' directly without
+    creating its own via p.chromium.launch(). This lets simple inline tasks
+    skip all the boilerplate.
+    """
+    # If code explicitly launches a browser, it's managing its own lifecycle
+    if 'p.chromium.launch' in code or 'p.chromium.connect' in code:
+        return False
+    # If code references page/browser as pre-existing variables, auto-configure
+    if 'page.' in code or 'await page' in code:
+        return True
+    if 'browser.' in code and 'browser = ' not in code:
+        return True
+    return False
+
+
 def wrap_code_if_needed(code):
-    """Wrap code in async function if not already wrapped"""
+    """Wrap code in async function if not already wrapped.
+
+    Three modes:
+    1. Complete script (has imports + async def main): run as-is
+    2. Partial script (has imports, no wrapper): wrap in async main()
+    3. Inline snippet (no imports):
+       a. Uses page/browser directly: auto-configure browser, context, page
+       b. Uses p.chromium.launch: provide just playwright instance
+    """
     # Check if code already has imports and async structure
     has_import = "from patchright" in code or "import patchright" in code
     has_async_main = "async def main" in code or "asyncio.run" in code
@@ -161,7 +198,14 @@ def wrap_code_if_needed(code):
 
     # If it's just Patchright commands, wrap in full template
     if not has_import:
-        return f'''
+        # Detect whether to provide auto-configured browser+page
+        auto_browser = _needs_auto_browser(code)
+
+        if auto_browser:
+            # Auto-configured mode: provides browser, context, page, config
+            # User code just does: await page.goto(...), print(await page.title()), etc.
+            indented = _indent_code(code, 12)
+            return f'''
 import asyncio
 import os
 import sys
@@ -172,6 +216,56 @@ sys.path.insert(0, str(Path(__file__).parent.resolve()))
 
 from patchright.async_api import async_playwright
 from lib import helpers
+from lib.helpers import (
+    get_browser_config, extract_markdown, extract_text,
+    extract_with_metadata, extract_content, take_screenshot,
+    safe_click, safe_type, wait_for_page_ready, scroll_page,
+    handle_cookie_banner, extract_table_data, stop_virtual_display,
+)
+
+async def main():
+    config = get_browser_config()
+    browser = None
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(**config['launch_options'])
+            context = await browser.new_context(**config['context_options'])
+            page = await context.new_page()
+
+{indented}
+
+    except Exception as error:
+        print(f"❌ Automation error: {{error}}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+    finally:
+        if browser:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+        stop_virtual_display()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+'''
+        else:
+            # Manual mode: provides p (playwright), helpers, config helper
+            indented = _indent_code(code, 12)
+            return f'''
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+# Add skill directory to path for helpers import
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+
+from patchright.async_api import async_playwright
+from lib import helpers
+from lib.helpers import get_browser_config, stop_virtual_display
 
 # Extra headers from environment variables (if configured)
 __extra_headers = helpers.get_extra_headers_from_env()
@@ -194,12 +288,14 @@ def get_context_options_with_headers(options=None):
 async def main():
     try:
         async with async_playwright() as p:
-            {code}
+{indented}
     except Exception as error:
         print(f"❌ Automation error: {{error}}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        stop_virtual_display()
 
 
 if __name__ == "__main__":
@@ -208,13 +304,14 @@ if __name__ == "__main__":
 
     # If has import but no async wrapper
     if not has_async_main:
+        indented = _indent_code(code, 8)
         return f"""
 import asyncio
 import sys
 
 async def main():
     try:
-        {code}
+{indented}
     except Exception as error:
         print(f"❌ Automation error: {{error}}")
         import traceback
