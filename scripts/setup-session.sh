@@ -148,7 +148,21 @@ else
     fi
 fi
 
-# Step 2: Install Chrome browser via patchright
+# Step 2: Ensure Xvfb is available (for headed mode in headless environments)
+# Headed mode via Xvfb provides better anti-bot evasion than headless=True
+if command -v Xvfb &> /dev/null; then
+    log_info "Xvfb already available"
+else
+    log_info "Installing Xvfb for headed browser support..."
+    apt-get update -qq && apt-get install -y -qq xvfb > /dev/null 2>&1 || {
+        log_info "Could not install Xvfb (non-fatal, headless mode still works)"
+    }
+    if command -v Xvfb &> /dev/null; then
+        log_success "Xvfb installed"
+    fi
+fi
+
+# Step 3: Install Chrome browser via patchright
 log_info "Checking Chrome browser installation..."
 
 # Check if Chrome is already installed

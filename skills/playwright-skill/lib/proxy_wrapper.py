@@ -263,11 +263,28 @@ def ensure_virtual_display(verbose=True) -> bool:
             print(f"   ✅ Xvfb already running on {os.environ.get('DISPLAY', ':99')}")
         return True
 
-    # Check if Xvfb is available
+    # Check if Xvfb is available, try to install if not
     if not shutil.which('Xvfb'):
         if verbose:
-            print("   ⚠️  Xvfb not available, falling back to headless mode")
-        return False
+            print("   📦 Xvfb not found, attempting to install...")
+        try:
+            subprocess.run(
+                ['apt-get', 'update', '-qq'],
+                capture_output=True, timeout=30
+            )
+            subprocess.run(
+                ['apt-get', 'install', '-y', '-qq', 'xvfb'],
+                capture_output=True, timeout=60
+            )
+        except Exception:
+            pass
+
+        if not shutil.which('Xvfb'):
+            if verbose:
+                print("   ⚠️  Xvfb not available, falling back to headless mode")
+            return False
+        if verbose:
+            print("   ✅ Xvfb installed")
 
     display_num = _find_free_display()
     display = f':{display_num}'
