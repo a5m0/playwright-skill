@@ -574,6 +574,47 @@ Patchright includes patches to bypass common bot detection:
 - Don't set custom user agents or headers unless necessary
 - Use `channel="chrome"` to use system Chrome if available
 - Avoid adding automation-revealing browser arguments
+- **Never use `add_init_script()`** — it's detectable and breaks anti-bot sites (see below)
+
+### CRITICAL: Never Use add_init_script() on Anti-Bot Sites
+
+`page.add_init_script()` is itself detectable by anti-bot systems and dramatically
+reduces page functionality. Observed on sites with Cloudflare/DataDome protection:
+
+- **Without init_script**: 33 requests, 508 DOM elements, full functionality
+- **With init_script**: 6 requests, 85 DOM elements — **85% reduction**
+
+Anti-bot systems detect init_script injection through modified prototype chains,
+execution timing, and Playwright bindings in the execution context. This is a
+Heisenberg-style debugging pitfall — the observation tool alters what's being observed.
+
+**Safe alternatives for debugging anti-bot sites:**
+
+1. **Playwright event listeners** (non-detectable — protocol level):
+   ```python
+   page.on("console", lambda msg: print(f"[{msg.type}] {msg.text}"))
+   page.on("pageerror", lambda err: print(f"[ERROR] {err}"))
+   page.on("request", lambda req: print(f"[REQ] {req.url}"))
+   page.on("requestfailed", lambda req: print(f"[FAIL] {req.url} {req.failure}"))
+   ```
+
+2. **Post-load page.evaluate()** (less detectable):
+   ```python
+   await page.goto("https://example.com")
+   # Evaluate AFTER load, not before via init_script
+   nav_info = await page.evaluate("() => ({ua: navigator.userAgent})")
+   ```
+
+3. **CDP protocol** (deep inspection without page injection):
+   ```python
+   client = await page.context.new_cdp_session(page)
+   await client.send("Network.enable")
+   await client.send("Performance.enable")
+   ```
+
+**Verification:** Run the same page twice — once with `add_init_script()` and once
+without. Compare request counts and DOM element counts. If they differ significantly,
+the site is detecting the injection.
 
 ## Advanced Usage
 

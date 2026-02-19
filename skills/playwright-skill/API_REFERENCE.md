@@ -186,6 +186,38 @@ async def launch_stealth_browser(p):
 - Avoid custom user agents unless necessary
 - Avoid custom HTTP headers unless necessary
 - Don't add automation-revealing browser arguments
+- **Never use `add_init_script()`** on anti-bot sites (see warning below)
+
+### WARNING: add_init_script() Breaks Anti-Bot Sites
+
+`page.add_init_script()` is itself detectable by anti-bot systems. On sites with
+Cloudflare/DataDome/Akamai protection, init_script injection reduces page functionality
+by up to 85% (6 resource loads vs 33, 85 DOM elements vs 508).
+
+Anti-bot systems detect it through modified prototype chains, execution timing, and
+Playwright bindings in the execution context. This makes it a Heisenberg-style pitfall
+where the diagnostic tool alters the behavior being observed.
+
+**Use these non-detectable alternatives instead:**
+
+```python
+# Protocol-level event listeners (safest — no page injection)
+page.on("console", lambda msg: print(f"[{msg.type}] {msg.text}"))
+page.on("pageerror", lambda err: print(f"[ERROR] {err}"))
+page.on("request", lambda req: print(f"[REQ] {req.url}"))
+page.on("requestfailed", lambda req: print(f"[FAIL] {req.url} {req.failure}"))
+
+# Post-load evaluate (runs after page load, not before)
+await page.goto("https://example.com")
+nav_info = await page.evaluate("() => ({ua: navigator.userAgent})")
+
+# CDP protocol (deep inspection without touching page JS context)
+client = await page.context.new_cdp_session(page)
+await client.send("Network.enable")
+await client.send("Performance.enable")
+```
+
+See the [SKILL.md Anti-Detection section](SKILL.md#critical-never-use-add_init_script-on-anti-bot-sites) for full details and verification steps.
 
 ## Selectors & Locators
 
@@ -541,17 +573,26 @@ PWDEBUG=1 python3 your_script.py
 
 ### In-Code Debugging
 
+**WARNING:** When debugging anti-bot sites, **never use `add_init_script()`** for
+diagnostics — it's detectable and dramatically changes page behavior (up to 85% fewer
+resources loaded). Use these protocol-level alternatives instead:
+
 ```python
 # Pause execution (opens inspector)
 await page.pause()
 
-# Console logs
+# Console logs (protocol-level, non-detectable)
 page.on("console", lambda msg: print(f"Browser log: {msg.text}"))
 page.on("pageerror", lambda error: print(f"Page error: {error}"))
 
-# Network monitoring
+# Network monitoring (protocol-level, non-detectable)
 page.on("request", lambda req: print(f">> {req.method} {req.url}"))
 page.on("response", lambda res: print(f"<< {res.status} {res.url}"))
+
+# CDP for deep inspection (no page JS injection)
+client = await page.context.new_cdp_session(page)
+await client.send("Network.enable")
+await client.send("Performance.enable")
 ```
 
 ## Performance Testing

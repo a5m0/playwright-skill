@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Universal Patchright Executor for Claude Code
+"""Universal Patchright Executor for Claude Code
 
 Executes Patchright automation code from:
 - File path: python run.py script.py
@@ -11,11 +10,11 @@ Ensures proper module resolution by running from skill directory.
 Uses Patchright (undetected Playwright fork) for anti-bot evasion.
 """
 
-import os
-import sys
-import subprocess
-import tempfile
 import glob
+import os
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 # Change to skill directory for proper module resolution
@@ -30,6 +29,7 @@ def check_patchright_installed():
     """Check if Patchright is installed"""
     try:
         import patchright
+
         return True
     except ImportError:
         return False
@@ -38,49 +38,71 @@ def check_patchright_installed():
 def is_uv_available():
     """Check if uv is available"""
     try:
-        subprocess.run(
-            ["uv", "--version"],
-            check=True,
-            capture_output=True
-        )
+        subprocess.run(["uv", "--version"], check=True, capture_output=True)
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 
 
+def find_vendor_wheel():
+    """Find vendored patched patchright wheel if available."""
+    vendor_dir = SKILL_DIR.parent.parent / "vendor"
+    if vendor_dir.is_dir():
+        wheels = list(vendor_dir.glob("patchright-*.whl"))
+        if wheels:
+            return str(wheels[0])
+    return None
+
+
 def install_patchright():
-    """Install Patchright if missing. Prefers uv, falls back to pip."""
+    """Install Patchright if missing. Prefers vendored wheel, then uv, then pip."""
     print("📦 Patchright not found. Installing...")
 
     use_uv = is_uv_available()
+    vendor_wheel = find_vendor_wheel()
 
     try:
-        if use_uv:
-            print("  Using uv for installation...")
+        if vendor_wheel:
+            print("  Installing patched patchright from vendor wheel...")
+            installer_args = (
+                ["uv", "pip", "install", vendor_wheel, "--reinstall"]
+                if use_uv
+                else [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    vendor_wheel,
+                    "--force-reinstall",
+                ]
+            )
+            subprocess.run(installer_args, check=True, cwd=SKILL_DIR)
+        elif use_uv:
+            print("  Using uv for installation (no vendor wheel, may be unpatched)...")
             subprocess.run(
-                ["uv", "pip", "install", "patchright"],
-                check=True,
-                cwd=SKILL_DIR
+                ["uv", "pip", "install", "patchright"], check=True, cwd=SKILL_DIR
             )
         else:
-            print("  Using pip for installation (uv not found)...")
+            print("  Using pip for installation (no vendor wheel, may be unpatched)...")
             subprocess.run(
                 [sys.executable, "-m", "pip", "install", "patchright"],
                 check=True,
-                cwd=SKILL_DIR
+                cwd=SKILL_DIR,
             )
 
         subprocess.run(
             [sys.executable, "-m", "patchright", "install", "chromium"],
             check=True,
-            cwd=SKILL_DIR
+            cwd=SKILL_DIR,
         )
         print("✅ Patchright installed successfully")
         return True
     except subprocess.CalledProcessError as e:
         print(f"❌ Failed to install Patchright: {e}")
         installer = "uv pip" if use_uv else "pip"
-        print(f"Please run manually: {installer} install patchright && uv run patchright install chromium")
+        print(
+            f"Please run manually: {installer} install patchright && uv run patchright install chromium"
+        )
         return False
 
 
@@ -92,13 +114,13 @@ def get_code_to_execute():
     if args and os.path.isfile(args[0]):
         file_path = os.path.abspath(args[0])
         print(f"📄 Executing file: {file_path}")
-        with open(file_path, 'r') as f:
+        with open(file_path) as f:
             return f.read()
 
     # Case 2: Inline code provided as argument
     if args:
         print("⚡ Executing inline code")
-        return ' '.join(args)
+        return " ".join(args)
 
     # Case 3: Code from stdin
     if not sys.stdin.isatty():
@@ -130,8 +152,8 @@ def cleanup_old_temp_files():
 def wrap_code_if_needed(code):
     """Wrap code in async function if not already wrapped"""
     # Check if code already has imports and async structure
-    has_import = 'from patchright' in code or 'import patchright' in code
-    has_async_main = 'async def main' in code or 'asyncio.run' in code
+    has_import = "from patchright" in code or "import patchright" in code
+    has_async_main = "async def main" in code or "asyncio.run" in code
 
     # If it's already a complete script, return as-is
     if has_import and has_async_main:
@@ -186,7 +208,7 @@ if __name__ == "__main__":
 
     # If has import but no async wrapper
     if not has_async_main:
-        return f'''
+        return f"""
 import asyncio
 import sys
 
@@ -202,7 +224,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-'''
+"""
 
     return code
 
@@ -229,20 +251,18 @@ def main():
 
     try:
         # Write code to temp file
-        with open(temp_file, 'w') as f:
+        with open(temp_file, "w") as f:
             f.write(code)
 
         # Execute the code
         print("🚀 Starting automation...\n")
-        result = subprocess.run(
-            [sys.executable, str(temp_file)],
-            cwd=SKILL_DIR
-        )
+        result = subprocess.run([sys.executable, str(temp_file)], cwd=SKILL_DIR)
         sys.exit(result.returncode)
 
     except Exception as error:
         print(f"❌ Execution failed: {error}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
     finally:

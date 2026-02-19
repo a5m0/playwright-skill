@@ -60,9 +60,12 @@ else
     PATCHRIGHT_INSTALLED=false
 fi
 
-# Step 1: Install patchright using uv pip (if not already installed)
+# Step 1: Install patchright (if not already installed)
+# Prefer vendored patched wheel which fixes upstream PRs #96/#99:
+#   - CDN URL: playwright.azureedge.net -> cdn.playwright.dev (silent patch failure)
+#   - Init script DNS: .internal domain -> route.continue_() (navigation failure)
+# When upstream merges these PRs, remove vendor/ and revert to PyPI install.
 if [ "$PATCHRIGHT_INSTALLED" = false ]; then
-    log_info "Installing patchright using uv pip..."
 
     # Check if uv is available
     if ! command -v uv &> /dev/null; then
@@ -73,11 +76,24 @@ if [ "$PATCHRIGHT_INSTALLED" = false ]; then
         }
     fi
 
-    # Install patchright with uv
-    uv pip install patchright --quiet || {
-        log_error "Failed to install patchright with uv"
-        exit 2
-    }
+    # Resolve vendor directory relative to skill dir
+    # Plugin layout: vendor/ is at repo root, skill is at skills/playwright-skill/
+    REPO_ROOT="$(cd "${SKILL_DIR}/../.." && pwd)"
+    VENDOR_WHEEL=$(ls "${REPO_ROOT}"/vendor/patchright-*.whl 2>/dev/null | head -1)
+
+    if [ -n "$VENDOR_WHEEL" ]; then
+        log_info "Installing patched patchright from vendor wheel..."
+        uv pip install "${VENDOR_WHEEL}" --quiet --reinstall || {
+            log_error "Failed to install patchright from vendor wheel"
+            exit 2
+        }
+    else
+        log_info "No vendor wheel found, installing from PyPI (may be unpatched)..."
+        uv pip install patchright --quiet || {
+            log_error "Failed to install patchright with uv"
+            exit 2
+        }
+    fi
 
     log_success "patchright installed successfully"
 else
