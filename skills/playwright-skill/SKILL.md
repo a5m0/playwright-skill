@@ -101,6 +101,31 @@ config = get_browser_config(headless=False)  # Force visible browser
 config = get_browser_config(use_chrome=False)  # Disable Chrome preference
 ```
 
+### Headed Mode with Xvfb (Anti-Bot Evasion)
+
+Some anti-bot systems detect headless browsers through fingerprinting. For better stealth,
+use `headless=False` even in web environments. The skill automatically starts an Xvfb
+virtual display when no physical display is available:
+
+```python
+# In web environments, this auto-starts Xvfb for a virtual display
+config = get_browser_config(headless=False)
+# config['xvfb_used'] == True when Xvfb was started
+```
+
+**When to use headed mode:**
+- Sites with aggressive bot detection (Cloudflare, DataDome, etc.)
+- When `headless=True` triggers CAPTCHAs or blocks
+- Fingerprint checks that detect headless-specific properties
+
+**Default behavior:**
+- `headless=None` (default): Headless in web, visible in local
+- `headless=False`: Visible browser (Xvfb in web, native display in local)
+- `headless=True`: Always headless
+
+Xvfb cleanup is automatic when using `get_browser_config()` through the inline executor.
+For manual scripts, call `stop_virtual_display()` when done.
+
 ## Setup (First Time)
 
 ```bash
@@ -350,24 +375,65 @@ asyncio.run(main())
 
 ## Inline Execution (Simple Tasks)
 
-For quick one-off tasks, you can execute code inline without creating files:
+For quick one-off tasks, execute code inline without creating files. The executor
+auto-detects whether your code needs a pre-configured browser and handles all the
+setup/teardown boilerplate.
+
+### Auto-configured mode (simplest)
+
+When inline code references `page` directly without creating its own browser, the
+executor auto-configures everything: browser launch with `get_browser_config()`,
+context creation, page creation, and cleanup. Just write the core logic:
 
 ```bash
-# Take a quick screenshot
+# Fetch a page title - browser/page/cleanup all handled automatically
 cd $SKILL_DIR && python3 run.py "
-browser = await p.chromium.launch(headless=False)
-page = await browser.new_page()
+await page.goto('https://example.com')
+print('Title:', await page.title())
+"
+
+# Take a screenshot
+cd $SKILL_DIR && python3 run.py "
 await page.goto('http://localhost:3001')
 await page.screenshot(path='/tmp/quick-screenshot.png', full_page=True)
 print('Screenshot saved')
+"
+
+# Extract content as markdown
+cd $SKILL_DIR && python3 run.py "
+await page.goto('https://example.com/article')
+content = await extract_markdown(page)
+print(content)
+"
+```
+
+Available in auto-configured mode: `page`, `context`, `browser`, `config`, `p`,
+`extract_markdown`, `extract_text`, `extract_content`, `extract_with_metadata`,
+`take_screenshot`, `safe_click`, `safe_type`, `wait_for_page_ready`, `scroll_page`,
+`handle_cookie_banner`, `extract_table_data`, `helpers`.
+
+### Manual mode (custom browser setup)
+
+When code uses `p.chromium.launch(...)`, the executor provides just the playwright
+instance and helpers, giving you full control:
+
+```bash
+# Custom browser config - full control over launch options
+cd $SKILL_DIR && python3 run.py "
+config = get_browser_config(headless=False)
+browser = await p.chromium.launch(**config['launch_options'])
+page = await browser.new_page()
+await page.goto('https://example.com')
+print(await page.title())
 await browser.close()
 "
 ```
 
-**When to use inline vs files:**
+### When to use inline vs files
 
-- **Inline**: Quick one-off tasks (screenshot, check if element exists, get page title)
-- **Files**: Complex tests, responsive design checks, anything user might want to re-run
+- **Inline auto-configured**: Quick tasks (screenshot, get title, extract content, check element)
+- **Inline manual**: Quick tasks needing custom browser config (headed mode, specific args)
+- **Files**: Complex tests, multi-page flows, responsive design checks, anything to re-run
 
 ## Available Helpers
 
