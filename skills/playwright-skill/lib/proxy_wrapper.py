@@ -101,13 +101,13 @@ def _should_bypass_proxy(hostname, proxy_config):
     Returns:
         True if the request should bypass the proxy
     """
+    # Always bypass localhost regardless of NO_PROXY
+    if hostname in ('localhost', '127.0.0.1', '::1'):
+        return True
+
     no_proxy = proxy_config.get('no_proxy', [])
     if not no_proxy:
         return False
-
-    # Always bypass localhost
-    if hostname in ('localhost', '127.0.0.1', '::1'):
-        return True
 
     hostname_lower = hostname.lower()
 
