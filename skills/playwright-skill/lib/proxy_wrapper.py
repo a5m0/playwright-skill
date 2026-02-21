@@ -94,6 +94,7 @@ def _should_bypass_proxy(hostname, proxy_config):
     Supports:
     - Exact matches: "example.com"
     - Domain suffixes: ".example.com" matches "sub.example.com"
+    - Glob suffixes: "*.example.com" matches "sub.example.com"
     - Wildcard: "*" bypasses everything
     - IP addresses: "127.0.0.1", "::1"
     - localhost is always bypassed
@@ -124,9 +125,13 @@ def _should_bypass_proxy(hostname, proxy_config):
         except ValueError:
             pass
 
-        # Domain suffix match: ".example.com" matches "sub.example.com"
+        # Domain suffix match: ".example.com" or "*.example.com" matches "sub.example.com"
         if pattern.startswith('.'):
             if hostname_lower.endswith(pattern) or hostname_lower == pattern[1:]:
+                return True
+        elif pattern.startswith('*.'):
+            suffix = pattern[1:]  # "*.example.com" -> ".example.com"
+            if hostname_lower.endswith(suffix) or hostname_lower == pattern[2:]:
                 return True
         elif hostname_lower == pattern:
             return True
