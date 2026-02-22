@@ -398,10 +398,12 @@ def start_proxy_wrapper(proxy_config, verbose=True):
         if proxy_config.get('no_proxy'):
             print(f"   NO_PROXY: {', '.join(proxy_config['no_proxy'])}")
 
+    server_ref = _wrapper_server
+
     def accept_connections():
         while True:
             try:
-                client, addr = _wrapper_server.accept()
+                client, addr = server_ref.accept()
                 thread = threading.Thread(target=handle_client, args=(client, proxy_config), daemon=True)
                 thread.start()
             except OSError:
@@ -623,6 +625,8 @@ def stop_proxy_wrapper():
             _wrapper_server.close()
         except OSError:
             pass
+        if _wrapper_thread is not None:
+            _wrapper_thread.join(timeout=2)
         _wrapper_server = None
         _wrapper_thread = None
         _wrapper_port = None
