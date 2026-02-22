@@ -50,9 +50,9 @@ I'll write custom Patchright code for any automation task you request and execut
 When running in **Claude Code for Web** environments, the skill automatically:
 
 ✅ **Detects the environment** - Uses official `CLAUDE_CODE_REMOTE` environment variable to detect web sessions
-✅ **Starts proxy wrapper** - Automatically launches authentication wrapper on `127.0.0.1:18080`
+✅ **Starts proxy wrapper** - Automatically launches authentication wrapper on a dynamic local port
 ✅ **Configures browser** - Prefers Chrome over Chromium for better stealth, sets up proxy, headless mode, and certificate handling
-✅ **Enables external sites** - Full internet access through authenticated proxy
+✅ **Enables external sites** - Full internet access through authenticated proxy (respects `NO_PROXY`)
 
 **No configuration needed** - just use the skill normally:
 
@@ -68,9 +68,11 @@ context = await browser.new_context(**config['context_options'])
 
 The skill transparently handles:
 - JWT proxy authentication (adds `Proxy-Authorization` headers)
+- Both CONNECT tunnels (HTTPS) and plain HTTP requests through the proxy
+- `NO_PROXY` / `HTTP_PROXY` / `HTTPS_PROXY` environment variables
 - Headless mode (automatically enabled in web environments)
 - Certificate validation (bypassed for proxy connections)
-- HTTPS tunnel establishment (via local wrapper)
+- Dynamic port allocation (no hardcoded ports)
 - Chrome preference (uses Chrome if available, falls back to Chromium for better bot detection avoidance)
 
 **For external websites in Claude Code web:**

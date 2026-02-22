@@ -387,8 +387,10 @@ browser = await p.chromium.launch(**config['launch_options'])
 
 **Technical Details:**
 - Detects web environments via `CLAUDE_CODE_REMOTE=true`
-- Starts local proxy wrapper on `127.0.0.1:18080` for authentication
-- Adds `Proxy-Authorization` headers for HTTPS tunnel establishment
+- Starts local proxy wrapper on a dynamically allocated port for authentication
+- Handles both CONNECT tunnels (HTTPS) and plain HTTP requests
+- Adds `Proxy-Authorization` headers automatically
+- Respects `NO_PROXY`, `HTTP_PROXY`, and `HTTPS_PROXY` environment variables
 - Uses Chrome by default for better stealth (falls back to Chromium)
 
 See [SKILL.md](skills/playwright-skill/SKILL.md) for full auto-configuration documentation.
