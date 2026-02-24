@@ -38,12 +38,8 @@ def main():
     wrapper_info = start_proxy_wrapper(proxy_config, verbose=False)
     port = wrapper_info['server'].rsplit(':', 1)[-1]
 
-    # Write port so chrome-instance.sh can read it and pass --proxy-server
-    with open(PORT_FILE, 'w') as f:
-        f.write(port)
-
-    print(f"Proxy wrapper listening on 127.0.0.1:{port}", flush=True)
-
+    # Register signal handlers before writing the port file so that a SIGTERM
+    # arriving during startup still triggers a clean shutdown and port file removal.
     def shutdown(signum, frame):
         stop_proxy_wrapper()
         try:
@@ -54,6 +50,12 @@ def main():
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
+
+    # Write port so chrome-instance.sh can read it and pass --proxy-server
+    with open(PORT_FILE, 'w') as f:
+        f.write(port)
+
+    print(f"Proxy wrapper listening on 127.0.0.1:{port}", flush=True)
 
     # Block until terminated
     while True:

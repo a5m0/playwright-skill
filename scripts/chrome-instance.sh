@@ -33,6 +33,7 @@ XVFB_PID_FILE="/tmp/patchright-xvfb.pid"
 PROXY_PID_FILE="/tmp/patchright-proxy.pid"
 PROXY_PORT_FILE="/tmp/patchright-proxy-port"
 LOG_FILE="/tmp/patchright-chrome.log"
+PROXY_LOG_FILE="/tmp/patchright-proxy.log"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -169,7 +170,7 @@ setup_proxy() {
     echo "   Starting proxy auth wrapper..."
     rm -f "$PROXY_PORT_FILE"
 
-    python3 "$SCRIPT_DIR/proxy-daemon.py" >> "$LOG_FILE" 2>&1 &
+    python3 "$SCRIPT_DIR/proxy-daemon.py" >> "$PROXY_LOG_FILE" 2>&1 &
     local proxy_pid=$!
     echo "$proxy_pid" > "$PROXY_PID_FILE"
 
@@ -187,7 +188,7 @@ setup_proxy() {
         (( attempts++ )) || true
     done
 
-    echo "   Proxy wrapper failed to start (check $LOG_FILE)"
+    echo "   Proxy wrapper failed to start (check $PROXY_LOG_FILE)"
     kill "$proxy_pid" 2>/dev/null || true
     rm -f "$PROXY_PID_FILE"
     return 1
@@ -240,7 +241,10 @@ cmd_start() {
     fi
 
     # Setup proxy auth wrapper (remote env only)
-    setup_proxy
+    if ! setup_proxy; then
+        echo "❌ Proxy wrapper failed to start — Chrome not launched (check $PROXY_LOG_FILE)"
+        exit 1
+    fi
 
     # Build Chrome args
     local chrome_args=(
@@ -263,6 +267,10 @@ cmd_start() {
     if [[ -n "$_PROXY_SERVER" ]]; then
         chrome_args+=(
             "--proxy-server=$_PROXY_SERVER"
+            # The proxy wrapper uses CONNECT tunneling, not SSL interception, so
+            # Chrome sees the real server cert. These flags are included to match
+            # get_browser_config() and guard against edge cases where the upstream
+            # proxy returns its own cert (e.g. corporate MITM proxies).
             --ignore-certificate-errors
             --ignore-certificate-errors-spki-list
         )
@@ -401,7 +409,8 @@ cmd_status() {
 
     echo ""
     echo "  Session dir : $SESSION_DIR"
-    echo "  Log file    : $LOG_FILE"
+    echo "  Chrome log  : $LOG_FILE"
+    echo "  Proxy log   : $PROXY_LOG_FILE"
 }
 
 usage() {
