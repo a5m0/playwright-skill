@@ -668,6 +668,14 @@ except ImportError:
         pass
 
 
+# Import persistent session helpers
+from .persistent_session import (
+    is_persistent_session_running,
+    get_persistent_session_info,
+    connect_to_persistent_session,
+)
+
+
 __all__ = [
     'get_extra_headers_from_env',
     'launch_browser',
@@ -695,4 +703,7 @@ __all__ = [
     'stop_proxy_wrapper',
     'ensure_virtual_display',
     'stop_virtual_display',
+    'is_persistent_session_running',
+    'get_persistent_session_info',
+    'connect_to_persistent_session',
 ]

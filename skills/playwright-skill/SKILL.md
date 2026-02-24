@@ -684,6 +684,108 @@ Heisenberg-style debugging pitfall — the observation tool alters what's being 
 without. Compare request counts and DOM element counts. If they differ significantly,
 the site is detecting the injection.
 
+## Persistent Chrome Session
+
+Connect to a long-running Chrome instance instead of launching a fresh browser for each script.
+Useful for debugging, reusing authenticated sessions, and testing without losing browser state.
+
+### Lifecycle management
+
+```bash
+# Start a persistent Chrome with DevTools enabled (default port 9222)
+scripts/chrome-instance.sh start
+
+# Check status and get connection details
+scripts/chrome-instance.sh status
+
+# Stop when done
+scripts/chrome-instance.sh stop
+
+# Custom port
+scripts/chrome-instance.sh start 9333
+scripts/chrome-instance.sh status 9333
+```
+
+Environment variable: set `PATCHRIGHT_SESSION_DIR` to control where the Chrome profile lives
+(default: `~/.patchright-session`). The profile persists between starts, keeping cookies and
+authenticated sessions intact.
+
+### Connecting in automation scripts
+
+```python
+# /tmp/patchright-persistent.py
+import asyncio
+from patchright.async_api import async_playwright
+import sys
+sys.path.insert(0, '$SKILL_DIR')
+from lib.persistent_session import connect_to_persistent_session
+
+async def main():
+    async with async_playwright() as p:
+        browser = await connect_to_persistent_session(p)  # raises if Chrome not running
+
+        # Option A: reuse existing context/session (cookies, localStorage preserved)
+        context = browser.contexts[0]
+        page = context.pages[0] if context.pages else await context.new_page()
+
+        # Option B: isolated context in the same browser
+        context = await browser.new_context()
+        page = await context.new_page()
+
+        await page.goto('https://example.com')
+        print(await page.title())
+
+        await browser.close()  # disconnects Patchright — Chrome keeps running
+
+asyncio.run(main())
+```
+
+Run it: `cd $SKILL_DIR && python3 run.py /tmp/patchright-persistent.py`
+
+### Inline usage (manual mode)
+
+```bash
+cd $SKILL_DIR && python3 run.py "
+browser = await connect_to_persistent_session(p)
+context = browser.contexts[0]
+page = context.pages[0] if context.pages else await context.new_page()
+await page.goto('http://localhost:3001')
+print('Title:', await page.title())
+await browser.close()
+"
+```
+
+`connect_to_persistent_session`, `is_persistent_session_running`, and
+`get_persistent_session_info` are available automatically in inline manual-mode scripts.
+
+### Checking before connecting
+
+```python
+from lib.persistent_session import is_persistent_session_running, get_persistent_session_info
+
+if is_persistent_session_running():
+    info = get_persistent_session_info()
+    print('Connected to:', info['Browser'])
+else:
+    print('No persistent session - start with: scripts/chrome-instance.sh start')
+```
+
+### Use cases
+
+| Scenario | Benefit |
+|---|---|
+| Debugging a failing test | Open DevTools in the live browser while the script pauses |
+| Sites requiring login | Log in manually once; scripts reuse the authenticated session |
+| Multi-script testing | Share a single browser process across many short scripts |
+| Visual inspection | Watch exactly what the automation is doing in real-time |
+
+### Key differences from a normal launch
+
+- **Does not start Chrome** — Chrome must already be running
+- **`browser.close()` is safe** — disconnects Patchright but leaves Chrome and all tabs open
+- **Shared state** — all scripts using the same port share the same cookies and storage
+- **CDP access** — full `new_cdp_session()` support for low-level DevTools inspection
+
 ## Advanced Usage
 
 For comprehensive Patchright/Playwright API documentation, see [API_REFERENCE.md](API_REFERENCE.md):

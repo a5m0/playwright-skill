@@ -167,8 +167,11 @@ def _needs_auto_browser(code):
     creating its own via p.chromium.launch(). This lets simple inline tasks
     skip all the boilerplate.
     """
-    # If code explicitly launches a browser, it's managing its own lifecycle
+    # If code explicitly launches or connects to a browser, it manages its own lifecycle
     if 'p.chromium.launch' in code or 'p.chromium.connect' in code:
+        return False
+    # connect_to_persistent_session() also manages its own browser lifecycle
+    if 'connect_to_persistent_session' in code:
         return False
     # If code references page/browser as pre-existing variables, auto-configure
     if 'page.' in code or 'await page' in code:
@@ -266,6 +269,11 @@ sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from patchright.async_api import async_playwright
 from lib import helpers
 from lib.helpers import get_browser_config, stop_virtual_display
+from lib.persistent_session import (
+    connect_to_persistent_session,
+    is_persistent_session_running,
+    get_persistent_session_info,
+)
 
 # Extra headers from environment variables (if configured)
 __extra_headers = helpers.get_extra_headers_from_env()
