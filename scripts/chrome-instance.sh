@@ -171,6 +171,8 @@ cmd_start() {
         --no-first-run
         --no-default-browser-check
         --disable-features=TranslateUI
+        --no-sandbox
+        --disable-setuid-sandbox
     )
 
     if [[ "$use_headless" == "true" ]]; then
