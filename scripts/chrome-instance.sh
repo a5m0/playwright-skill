@@ -8,10 +8,18 @@
 #   scripts/chrome-instance.sh stop            # Stop the managed instance
 #   scripts/chrome-instance.sh status [port]   # Show status and connection details
 #
-# Display handling mirrors get_browser_config() in lib/proxy_wrapper.py:
-#   - Local env with display: headed browser (visible window)
-#   - Remote env (CLAUDE_CODE_REMOTE=true): starts Xvfb, headed via virtual display
-#   - No display + no Xvfb: falls back to --headless=new
+# Environment handling mirrors get_browser_config() in lib/proxy_wrapper.py:
+#
+#   Display:
+#     - Local env with display: headed browser (visible window)
+#     - Remote env (CLAUDE_CODE_REMOTE=true): starts Xvfb, headed via virtual display
+#     - No display + no Xvfb: falls back to --headless=new
+#
+#   Proxy (CLAUDE_CODE_REMOTE=true only):
+#     - Starts scripts/proxy-daemon.py, which runs the Python proxy auth wrapper
+#     - Passes --proxy-server=http://127.0.0.1:<port> to Chrome
+#     - Chrome natively bypasses the proxy for localhost/127.0.0.1, so dev
+#       servers always work without extra configuration
 #
 # The session profile persists between starts, preserving cookies, localStorage,
 # and authenticated sessions.
@@ -22,7 +30,11 @@ DEFAULT_PORT=9222
 SESSION_DIR="${PATCHRIGHT_SESSION_DIR:-$HOME/.patchright-session}"
 PID_FILE="/tmp/patchright-chrome.pid"
 XVFB_PID_FILE="/tmp/patchright-xvfb.pid"
+PROXY_PID_FILE="/tmp/patchright-proxy.pid"
+PROXY_PORT_FILE="/tmp/patchright-proxy-port"
 LOG_FILE="/tmp/patchright-chrome.log"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Chrome binary discovery ───────────────────────────────────────────────────
 
@@ -118,6 +130,69 @@ setup_display() {
     return 0
 }
 
+# ── Proxy wrapper setup ───────────────────────────────────────────────────────
+# In remote environments starts scripts/proxy-daemon.py (a persistent Python
+# process that runs the proxy_wrapper.py auth forwarding proxy).
+# Chrome's built-in behaviour always bypasses the proxy for localhost/127.0.0.1,
+# so dev server testing works without extra configuration.
+#
+# Sets _PROXY_SERVER to "http://127.0.0.1:<port>" on success, "" otherwise.
+
+_PROXY_SERVER=""
+
+setup_proxy() {
+    _PROXY_SERVER=""
+
+    if [[ "${CLAUDE_CODE_REMOTE:-}" != "true" ]]; then
+        return 0
+    fi
+
+    local https_proxy="${HTTPS_PROXY:-${https_proxy:-}}"
+    if [[ -z "$https_proxy" ]]; then
+        return 0
+    fi
+
+    # Reuse existing proxy wrapper if still running
+    if [[ -f "$PROXY_PID_FILE" ]]; then
+        local existing_pid
+        existing_pid=$(cat "$PROXY_PID_FILE")
+        if kill -0 "$existing_pid" 2>/dev/null && [[ -f "$PROXY_PORT_FILE" ]]; then
+            local port
+            port=$(cat "$PROXY_PORT_FILE")
+            _PROXY_SERVER="http://127.0.0.1:$port"
+            echo "   Proxy:   reusing wrapper on port $port (PID $existing_pid)"
+            return 0
+        fi
+        rm -f "$PROXY_PID_FILE" "$PROXY_PORT_FILE"
+    fi
+
+    echo "   Starting proxy auth wrapper..."
+    rm -f "$PROXY_PORT_FILE"
+
+    python3 "$SCRIPT_DIR/proxy-daemon.py" >> "$LOG_FILE" 2>&1 &
+    local proxy_pid=$!
+    echo "$proxy_pid" > "$PROXY_PID_FILE"
+
+    # Wait for proxy-daemon.py to write the port file (up to 3 seconds)
+    local attempts=0
+    while [[ $attempts -lt 30 ]]; do
+        if [[ -f "$PROXY_PORT_FILE" ]]; then
+            local port
+            port=$(cat "$PROXY_PORT_FILE")
+            _PROXY_SERVER="http://127.0.0.1:$port"
+            echo "   Proxy:   wrapper on 127.0.0.1:$port (PID $proxy_pid)"
+            return 0
+        fi
+        sleep 0.1
+        (( attempts++ )) || true
+    done
+
+    echo "   Proxy wrapper failed to start (check $LOG_FILE)"
+    kill "$proxy_pid" 2>/dev/null || true
+    rm -f "$PROXY_PID_FILE"
+    return 1
+}
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 devtools_responding() {
@@ -164,6 +239,9 @@ cmd_start() {
         use_headless=true
     fi
 
+    # Setup proxy auth wrapper (remote env only)
+    setup_proxy
+
     # Build Chrome args
     local chrome_args=(
         --remote-debugging-port="$port"
@@ -180,6 +258,15 @@ cmd_start() {
         echo "   Mode:    headless (no display available)"
     else
         echo "   Mode:    headed${DISPLAY:+ (display: $DISPLAY)}"
+    fi
+
+    if [[ -n "$_PROXY_SERVER" ]]; then
+        chrome_args+=(
+            "--proxy-server=$_PROXY_SERVER"
+            --ignore-certificate-errors
+            --ignore-certificate-errors-spki-list
+        )
+        echo "   Proxy:   $_PROXY_SERVER (localhost bypassed automatically by Chrome)"
     fi
 
     "$chrome" "${chrome_args[@]}" > "$LOG_FILE" 2>&1 &
@@ -209,8 +296,6 @@ cmd_start() {
 }
 
 cmd_stop() {
-    local stopped_something=false
-
     # Stop Chrome
     if [[ -f "$PID_FILE" ]]; then
         local pid
@@ -218,7 +303,6 @@ cmd_stop() {
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid"
             echo "✅ Chrome stopped (PID $pid)"
-            stopped_something=true
         else
             echo "ℹ️  Chrome was not running (stale PID file removed)"
         fi
@@ -237,6 +321,17 @@ cmd_stop() {
         fi
         rm -f "$XVFB_PID_FILE"
     fi
+
+    # Stop proxy wrapper if we started it
+    if [[ -f "$PROXY_PID_FILE" ]]; then
+        local proxy_pid
+        proxy_pid=$(cat "$PROXY_PID_FILE")
+        if kill -0 "$proxy_pid" 2>/dev/null; then
+            kill "$proxy_pid"
+            echo "✅ Proxy wrapper stopped (PID $proxy_pid)"
+        fi
+        rm -f "$PROXY_PID_FILE" "$PROXY_PORT_FILE"
+    fi
 }
 
 cmd_status() {
@@ -250,12 +345,12 @@ cmd_status() {
         local pid
         pid=$(cat "$PID_FILE")
         if kill -0 "$pid" 2>/dev/null; then
-            echo "  Process : running (PID $pid)"
+            echo "  Chrome  : running (PID $pid)"
         else
-            echo "  Process : stopped (stale PID file)"
+            echo "  Chrome  : stopped (stale PID file)"
         fi
     else
-        echo "  Process : unknown (no PID file)"
+        echo "  Chrome  : unknown (no PID file)"
     fi
 
     # Xvfb
@@ -263,13 +358,27 @@ cmd_status() {
         local xvfb_pid
         xvfb_pid=$(cat "$XVFB_PID_FILE")
         if kill -0 "$xvfb_pid" 2>/dev/null; then
-            echo "  Xvfb    : running (PID $xvfb_pid, display ${DISPLAY:-unknown})"
+            echo "  Xvfb    : running (PID $xvfb_pid, display ${DISPLAY:-:99})"
         else
             echo "  Xvfb    : stopped (stale PID file)"
         fi
     fi
 
+    # Proxy wrapper
+    if [[ -f "$PROXY_PID_FILE" ]]; then
+        local proxy_pid
+        proxy_pid=$(cat "$PROXY_PID_FILE")
+        if kill -0 "$proxy_pid" 2>/dev/null && [[ -f "$PROXY_PORT_FILE" ]]; then
+            local proxy_port
+            proxy_port=$(cat "$PROXY_PORT_FILE")
+            echo "  Proxy   : running (PID $proxy_pid, port $proxy_port)"
+        else
+            echo "  Proxy   : stopped (stale PID file)"
+        fi
+    fi
+
     # DevTools
+    echo ""
     if devtools_responding "$port"; then
         echo "  DevTools: ✅ responding on http://localhost:$port"
         local info
@@ -299,18 +408,19 @@ usage() {
     echo "Usage: $(basename "$0") {start|stop|status} [port]"
     echo ""
     echo "  start [port]   Start Chrome with remote debugging (default: $DEFAULT_PORT)"
-    echo "  stop           Stop the managed Chrome instance (and Xvfb if started)"
+    echo "  stop           Stop Chrome, Xvfb, and proxy wrapper"
     echo "  status [port]  Show status and connection details"
     echo ""
     echo "Environment variables:"
     echo "  PATCHRIGHT_SESSION_DIR   Chrome profile directory (default: ~/.patchright-session)"
-    echo "  CLAUDE_CODE_REMOTE       Set to 'true' in Claude Code web - triggers Xvfb setup"
+    echo "  CLAUDE_CODE_REMOTE       Set to 'true' in Claude Code web - triggers Xvfb + proxy setup"
+    echo "  HTTPS_PROXY              Upstream proxy URL (used when CLAUDE_CODE_REMOTE=true)"
     echo ""
     echo "Examples:"
     echo "  $(basename "$0") start          # Start on port $DEFAULT_PORT"
     echo "  $(basename "$0") start 9333     # Start on custom port"
     echo "  $(basename "$0") status         # Show status"
-    echo "  $(basename "$0") stop           # Stop Chrome (and Xvfb)"
+    echo "  $(basename "$0") stop           # Stop Chrome, Xvfb, and proxy"
 }
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
