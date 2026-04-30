@@ -63,10 +63,10 @@ if [ -z "$SKILL_DIR" ]; then
 fi
 
 # Step 1: Install patchright
-# Prefer vendored patched wheel which fixes upstream PRs #96/#99:
-#   - CDN URL: playwright.azureedge.net -> cdn.playwright.dev (silent patch failure)
+# Prefer vendored patched wheel which fixes upstream PR #99 (closed/rejected):
 #   - Init script DNS: .internal domain -> route.continue_() (navigation failure)
-# When upstream merges these PRs, remove vendor/ and revert to PyPI install.
+# PR #96 (CDN URL fix) was merged upstream in v1.58.0 and is no longer patched.
+# If upstream ever drops the .internal redirect, remove vendor/ and revert to PyPI.
 
 # Check if uv is available
 if ! command -v uv &> /dev/null; then
@@ -88,21 +88,23 @@ VENDOR_WHEEL=$(ls "${REPO_ROOT}"/vendor/patchright-*.whl 2>/dev/null | head -1)
 PATCHRIGHT_INSTALLED=false
 if python3 -c "import patchright" 2>/dev/null; then
     if [ -n "$VENDOR_WHEEL" ]; then
-        # Check if the installed version came from our vendor wheel by looking
-        # for our patched init script behavior (route.continue_ instead of route.fallback)
+        # Detect vendor wheel by checking that the broken .internal redirect
+        # has been removed from the _impl/ source. Stock PyPI patchright
+        # contains 'patchright-init-script-inject.internal' in _impl/_page.py
+        # and _impl/_browser_context.py; our patched wheel does not.
         INSTALLED_FROM_VENDOR=$(python3 -c "
 import importlib.util, pathlib
 spec = importlib.util.find_spec('patchright')
 if spec and spec.origin:
     pkg_dir = pathlib.Path(spec.origin).parent
-    init_helper = pkg_dir / '_impl' / '_helper.py'
-    if init_helper.exists():
-        content = init_helper.read_text()
-        # Vendor wheel uses route.continue_(), PyPI uses route.fallback()
-        if 'route.continue_()' in content or 'patchright-init-script-inject.internal' not in content:
-            print('yes')
+    impl = pkg_dir / '_impl'
+    if impl.exists():
+        for p in impl.rglob('*.py'):
+            if 'patchright-init-script-inject.internal' in p.read_text(errors='ignore'):
+                print('no')
+                break
         else:
-            print('no')
+            print('yes')
     else:
         print('unknown')
 else:

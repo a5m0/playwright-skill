@@ -1,30 +1,46 @@
 #!/bin/bash
 # Build a patched patchright wheel from upstream source.
 #
-# Fixes applied (upstream PRs #96 and #99):
-#   - CDN URL: playwright.azureedge.net -> cdn.playwright.dev
+# Fix applied (upstream PR #99, closed/rejected):
 #   - Init script DNS: route.fallback(url=...internal) -> route.continue_()
-#   - Validation flag to catch future URL changes
+#
+# The maintainer rejected PR #99 ("This is needed for Patchright's internal
+# InitScript functionality"), but the .internal domain breaks navigation in
+# environments where it doesn't resolve.
+#
+# Note: PR #96 (CDN URL: playwright.azureedge.net -> cdn.playwright.dev) was
+# merged upstream in v1.58.0, so it is no longer patched here.
 #
 # Usage:
 #   cd vendor && bash build-patchright.sh [VERSION]
-#   # Default version: 1.58.0
+#   # Default version: 1.59.0
 #
 # Prerequisites:
-#   pip install toml setuptools wheel setuptools_scm
+#   python3 with venv module (script creates an isolated venv for the build,
+#   which avoids Debian/Ubuntu-patched setuptools breaking bdist_wheel).
 #
-# Exit strategy: When upstream merges PRs #96/#99, delete vendor/ and
-# revert pyproject.toml to use PyPI directly (patchright>=1.58.1 or later).
+# Exit strategy: If upstream ever accepts the DNS fix (or removes the
+# .internal redirect), delete vendor/ and revert pyproject.toml to use
+# patchright from PyPI directly.
 
 set -euo pipefail
 
-VERSION="${1:-1.58.0}"
+VERSION="${1:-1.59.0}"
 BUILD_DIR="/tmp/patchright-build-$$"
+VENV_DIR="/tmp/patchright-venv-$$"
 # Capture output directory NOW before any cd commands
 OUTPUT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "=== Building patchright ${VERSION} ==="
 echo "Build dir: ${BUILD_DIR}"
+
+# Create isolated venv with clean setuptools (Debian/Ubuntu's patched
+# setuptools breaks bdist_wheel with "AttributeError: install_layout").
+echo "Creating build venv..."
+python3 -m venv "${VENV_DIR}"
+PY="${VENV_DIR}/bin/python"
+PIP="${VENV_DIR}/bin/pip"
+"${PIP}" install --quiet --upgrade pip setuptools wheel setuptools_scm toml
 
 # Clone repos
 echo "Cloning patchright-python..."
@@ -34,25 +50,10 @@ git clone --quiet https://github.com/microsoft/playwright-python --branch "v${VE
 
 cd "${BUILD_DIR}"
 
-# === Fix 1: CDN URL (PR #96) ===
-# Playwright changed CDN from playwright.azureedge.net to cdn.playwright.dev.
-# The AST pattern match in patch_python_package.py silently fails without this.
-echo "Applying fix: CDN URL (PR #96)..."
-sed -i 's|https://playwright.azureedge.net/builds/driver/|https://cdn.playwright.dev/builds/driver/|g' patch_python_package.py
-
-# Add validation flag so future URL changes fail loudly
-sed -i '/^patchright_version/a\\n# Validation flags to catch silent failures when upstream changes\nupstream_driver_url_found = False' patch_python_package.py
-# Set flag when URL match is found (insert after the url match line)
-sed -i '/node.targets\[0\].id == "url"/,/node.value = ast.JoinedStr/{
-    /node.value = ast.JoinedStr/i\                upstream_driver_url_found = True
-}' patch_python_package.py
-# Assert after setup.py patching
-sed -i '/patch_file("playwright-python\/setup.py", setup_tree)/a\\nif not upstream_driver_url_found:\n    raise RuntimeError(\n        "Failed to find upstream driver URL in setup.py. "\n        "Playwright may have changed their CDN URL again. "\n        "The patchright driver will NOT be downloaded."\n    )' patch_python_package.py
-
-# === Fix 2: Init script DNS (PR #99) ===
+# === Fix: Init script DNS (PR #99, rejected) ===
 # The .internal domain doesn't resolve, causing navigation failures.
 echo "Applying fix: init script DNS (PR #99)..."
-python3 -c "
+"${PY}" -c "
 with open('patch_python_package.py') as f:
     content = f.read()
 # Replace all occurrences of the broken route handler
@@ -60,6 +61,11 @@ old = '''                    protocol = route.request.url.split(\":\")[0]
                     await route.fallback(url=f\"{protocol}://patchright-init-script-inject.internal/\")'''
 new = '''                    await route.continue_()'''
 count = content.count(old)
+if count == 0:
+    raise RuntimeError(
+        'Failed to find .internal route handler in patch_python_package.py. '
+        'Upstream patchright-python may have changed; review the script.'
+    )
 content = content.replace(old, new)
 with open('patch_python_package.py', 'w') as f:
     f.write(content)
@@ -68,11 +74,10 @@ print(f'  Replaced route handler in {count} location(s)')
 
 # === Run the patching script ===
 echo "Running patch_python_package.py..."
-pip install --quiet toml 2>/dev/null || true
-patchright_release="${VERSION}" python3 patch_python_package.py
+patchright_release="${VERSION}" "${PY}" patch_python_package.py
 
 # Fix license field format for newer setuptools
-python3 -c "
+"${PY}" -c "
 import toml
 with open('playwright-python/pyproject.toml') as f:
     data = toml.load(f)
@@ -86,10 +91,7 @@ if isinstance(data['project'].get('license'), str):
 # === Build the wheel ===
 echo "Building wheel..."
 cd playwright-python
-pip install --quiet setuptools wheel setuptools_scm 2>/dev/null || true
-# Uninstall auditwheel if present (incompatible version causes errors, and it's optional)
-pip uninstall -y auditwheel 2>/dev/null || true
-PLAYWRIGHT_TARGET_WHEEL=manylinux1_x86_64.whl python3 setup.py bdist_wheel 2>&1 | tail -3
+PLAYWRIGHT_TARGET_WHEEL=manylinux1_x86_64.whl "${PY}" setup.py bdist_wheel 2>&1 | tail -3
 
 # === Copy result ===
 WHEEL=$(ls dist/patchright-*.whl)
@@ -104,4 +106,4 @@ echo "  uv pip install vendor/${WHEEL_NAME}"
 echo "  uv run python -m patchright install chrome"
 
 # Cleanup
-rm -rf "${BUILD_DIR}"
+rm -rf "${BUILD_DIR}" "${VENV_DIR}"
