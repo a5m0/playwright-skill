@@ -624,6 +624,7 @@ async def extract_with_metadata(
 # Import proxy wrapper functions
 try:
     from .proxy_wrapper import (
+        is_claude_code_remote_environment,
         is_claude_code_web_environment,
         get_proxy_config,
         get_browser_config,
@@ -636,6 +637,9 @@ try:
 except ImportError:
     _PROXY_WRAPPER_AVAILABLE = False
     # Provide stub functions if import fails
+    def is_claude_code_remote_environment():
+        return False
+
     def is_claude_code_web_environment():
         return False
 
@@ -696,6 +700,7 @@ __all__ = [
     'extract_markdown',
     'extract_text',
     'extract_with_metadata',
+    'is_claude_code_remote_environment',
     'is_claude_code_web_environment',
     'get_proxy_config',
     'get_browser_config',

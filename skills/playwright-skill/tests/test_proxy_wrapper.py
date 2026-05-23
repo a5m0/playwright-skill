@@ -14,8 +14,10 @@ from lib.proxy_wrapper import (
     _inject_auth_header,
     _send_error,
     _should_bypass_proxy,
+    get_browser_config,
     get_proxy_config,
     handle_client,
+    is_claude_code_remote_environment,
     is_claude_code_web_environment,
     start_proxy_wrapper,
     stop_proxy_wrapper,
@@ -290,29 +292,89 @@ class TestGetProxyConfig:
 
 
 # ===================================================================
-# is_claude_code_web_environment
+# is_claude_code_remote_environment / is_claude_code_web_environment
 # ===================================================================
 
-class TestIsClaudeCodeWebEnvironment:
+class TestIsClaudeCodeRemoteEnvironment:
     def test_true_when_remote_and_proxy(self):
         env = {"CLAUDE_CODE_REMOTE": "true", "HTTPS_PROXY": "http://p:1"}
         with mock.patch.dict(os.environ, env, clear=True):
+            assert is_claude_code_remote_environment() is True
+            assert is_claude_code_web_environment() is True
+
+    def test_true_when_remote_without_proxy(self):
+        # cloud_default uses a transparent egress proxy with no HTTPS_PROXY.
+        # Detection must still fire so cert handling + headless mode apply.
+        env = {"CLAUDE_CODE_REMOTE": "true"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert is_claude_code_remote_environment() is True
+            assert is_claude_code_web_environment() is True
+
+    def test_true_when_cloud_default_type_only(self):
+        # Some cloud envs set only CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE.
+        env = {"CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE": "cloud_default"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert is_claude_code_remote_environment() is True
             assert is_claude_code_web_environment() is True
 
     def test_false_when_not_remote(self):
         env = {"HTTPS_PROXY": "http://p:1"}
         with mock.patch.dict(os.environ, env, clear=True):
-            assert is_claude_code_web_environment() is False
-
-    def test_false_when_remote_but_no_proxy(self):
-        env = {"CLAUDE_CODE_REMOTE": "true"}
-        with mock.patch.dict(os.environ, env, clear=True):
+            assert is_claude_code_remote_environment() is False
             assert is_claude_code_web_environment() is False
 
     def test_false_when_remote_is_not_true(self):
         env = {"CLAUDE_CODE_REMOTE": "false", "HTTPS_PROXY": "http://p:1"}
         with mock.patch.dict(os.environ, env, clear=True):
+            assert is_claude_code_remote_environment() is False
             assert is_claude_code_web_environment() is False
+
+    def test_false_when_env_type_empty(self):
+        env = {"CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE": ""}
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert is_claude_code_remote_environment() is False
+            assert is_claude_code_web_environment() is False
+
+
+# ===================================================================
+# get_browser_config
+# ===================================================================
+
+class TestGetBrowserConfig:
+    def test_transparent_proxy_ignores_cert_errors(self):
+        # Remote env with no HTTPS_PROXY (cloud_default transparent proxy):
+        # cert handling must fire, but no proxy wrapper is started.
+        env = {"CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE": "cloud_default"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = get_browser_config(verbose=False)
+            assert "--ignore-certificate-errors" in cfg["launch_options"]["args"]
+            assert cfg["context_options"].get("ignore_https_errors") is True
+            assert cfg["proxy_wrapper_used"] is False
+            assert "proxy" not in cfg["launch_options"]
+            # Remote env defaults to headless
+            assert cfg["launch_options"]["headless"] is True
+
+    def test_explicit_proxy_starts_wrapper_and_ignores_certs(self):
+        env = {"CLAUDE_CODE_REMOTE": "true", "HTTPS_PROXY": "http://u:p@proxy:8080"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch(
+                    "lib.proxy_wrapper.start_proxy_wrapper",
+                    return_value={"server": "http://127.0.0.1:5555"},
+                ):
+            cfg = get_browser_config(verbose=False)
+            assert "--ignore-certificate-errors" in cfg["launch_options"]["args"]
+            assert cfg["context_options"].get("ignore_https_errors") is True
+            assert cfg["proxy_wrapper_used"] is True
+            assert cfg["launch_options"]["proxy"] == {"server": "http://127.0.0.1:5555"}
+
+    def test_local_env_no_cert_handling(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            cfg = get_browser_config(verbose=False)
+            assert "--ignore-certificate-errors" not in cfg["launch_options"]["args"]
+            assert "ignore_https_errors" not in cfg["context_options"]
+            assert cfg["proxy_wrapper_used"] is False
+            # Local default is a visible browser
+            assert cfg["launch_options"]["headless"] is False
 
 
 # ===================================================================

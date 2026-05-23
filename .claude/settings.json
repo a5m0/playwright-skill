@@ -11,7 +11,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/setup-session.sh",
+            "command": "\"${CLAUDE_PLUGIN_ROOT:-$CLAUDE_PROJECT_DIR}\"/scripts/setup-session.sh",
             "timeout": 300
           }
         ]

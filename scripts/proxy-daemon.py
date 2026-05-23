@@ -3,7 +3,8 @@
 Proxy authentication wrapper daemon for persistent Chrome instances.
 
 Starts the proxy_wrapper.py forwarding proxy and keeps it alive until
-terminated. Used by chrome-instance.sh when CLAUDE_CODE_REMOTE=true.
+terminated. Used by chrome-instance.sh in remote environments when an
+explicit HTTPS_PROXY is configured.
 
 Writes the local proxy port to /tmp/patchright-proxy-port once ready,
 then blocks until SIGTERM or SIGINT.

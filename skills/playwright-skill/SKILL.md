@@ -49,10 +49,11 @@ I'll write custom Patchright code for any automation task you request and execut
 
 When running in **Claude Code for Web** environments, the skill automatically:
 
-✅ **Detects the environment** - Uses official `CLAUDE_CODE_REMOTE` environment variable to detect web sessions
-✅ **Starts proxy wrapper** - Automatically launches authentication wrapper on a dynamic local port
-✅ **Configures browser** - Prefers Chrome over Chromium for better stealth, sets up proxy, headless mode, and certificate handling
-✅ **Enables external sites** - Full internet access through authenticated proxy (respects `NO_PROXY`)
+✅ **Detects the environment** - Uses the `CLAUDE_CODE_REMOTE` and `CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE` (e.g. `cloud_default`) variables to detect remote/web sessions
+✅ **Handles certificates** - Ignores certificate errors so navigation works through the egress proxy (explicit or transparent), avoiding `ERR_CERT_AUTHORITY_INVALID`
+✅ **Starts proxy wrapper** - When an `HTTPS_PROXY` is set, launches an authentication wrapper on a dynamic local port
+✅ **Configures browser** - Prefers Chrome over Chromium for better stealth, sets up headless mode, and certificate handling
+✅ **Enables external sites** - Full internet access through the egress proxy (respects `NO_PROXY`)
 
 **No configuration needed** - just use the skill normally:
 
