@@ -12,14 +12,19 @@
 #
 #   Display:
 #     - Local env with display: headed browser (visible window)
-#     - Remote env (CLAUDE_CODE_REMOTE=true): starts Xvfb, headed via virtual display
+#     - Remote env: starts Xvfb, headed via virtual display
 #     - No display + no Xvfb: falls back to --headless=new
 #
-#   Proxy (CLAUDE_CODE_REMOTE=true only):
+#   Certificates (remote env): --ignore-certificate-errors is passed because
+#     egress is proxied with a certificate Chrome cannot validate.
+#
+#   Proxy (remote env with HTTPS_PROXY only):
 #     - Starts scripts/proxy-daemon.py, which runs the Python proxy auth wrapper
 #     - Passes --proxy-server=http://127.0.0.1:<port> to Chrome
 #     - Chrome natively bypasses the proxy for localhost/127.0.0.1, so dev
 #       servers always work without extra configuration
+#
+#   "Remote env" = CLAUDE_CODE_REMOTE=true OR CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE set.
 #
 # The session profile persists between starts, preserving cookies, localStorage,
 # and authenticated sessions.
@@ -36,6 +41,15 @@ LOG_FILE="/tmp/patchright-chrome.log"
 PROXY_LOG_FILE="/tmp/patchright-proxy.log"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── Remote environment detection ──────────────────────────────────────────────
+# Mirrors is_claude_code_remote_environment() in lib/proxy_wrapper.py. Two signals
+# are checked because cloud environments (CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE=
+# cloud_default) route egress through a transparent proxy and may not set
+# CLAUDE_CODE_REMOTE.
+is_remote_env() {
+    [[ "${CLAUDE_CODE_REMOTE:-}" == "true" || -n "${CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE:-}" ]]
+}
 
 # ── Chrome binary discovery ───────────────────────────────────────────────────
 
@@ -92,7 +106,7 @@ setup_display() {
     fi
 
     # Not in a remote environment - local without DISPLAY is unusual but let Chrome decide
-    if [[ "${CLAUDE_CODE_REMOTE:-}" != "true" ]]; then
+    if ! is_remote_env; then
         return 0
     fi
 
@@ -144,7 +158,7 @@ _PROXY_SERVER=""
 setup_proxy() {
     _PROXY_SERVER=""
 
-    if [[ "${CLAUDE_CODE_REMOTE:-}" != "true" ]]; then
+    if ! is_remote_env; then
         return 0
     fi
 
@@ -264,16 +278,20 @@ cmd_start() {
         echo "   Mode:    headed${DISPLAY:+ (display: $DISPLAY)}"
     fi
 
-    if [[ -n "$_PROXY_SERVER" ]]; then
+    # Remote environments route egress through a proxy whose certificate Chrome
+    # cannot validate — either an explicit wrapper (below) or a transparent
+    # cloud_default proxy that intercepts TLS with an untrusted CA. Ignore cert
+    # errors in any remote env to avoid ERR_CERT_AUTHORITY_INVALID. Mirrors
+    # get_browser_config() in lib/proxy_wrapper.py.
+    if is_remote_env; then
         chrome_args+=(
-            "--proxy-server=$_PROXY_SERVER"
-            # The proxy wrapper uses CONNECT tunneling, not SSL interception, so
-            # Chrome sees the real server cert. These flags are included to match
-            # get_browser_config() and guard against edge cases where the upstream
-            # proxy returns its own cert (e.g. corporate MITM proxies).
             --ignore-certificate-errors
             --ignore-certificate-errors-spki-list
         )
+    fi
+
+    if [[ -n "$_PROXY_SERVER" ]]; then
+        chrome_args+=("--proxy-server=$_PROXY_SERVER")
         echo "   Proxy:   $_PROXY_SERVER (localhost bypassed automatically by Chrome)"
     fi
 
@@ -422,8 +440,9 @@ usage() {
     echo ""
     echo "Environment variables:"
     echo "  PATCHRIGHT_SESSION_DIR   Chrome profile directory (default: ~/.patchright-session)"
-    echo "  CLAUDE_CODE_REMOTE       Set to 'true' in Claude Code web - triggers Xvfb + proxy setup"
-    echo "  HTTPS_PROXY              Upstream proxy URL (used when CLAUDE_CODE_REMOTE=true)"
+    echo "  CLAUDE_CODE_REMOTE       Set to 'true' in Claude Code web - triggers Xvfb + cert handling"
+    echo "  CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE  Set (e.g. 'cloud_default') in cloud envs - same effect"
+    echo "  HTTPS_PROXY              Upstream proxy URL (forwarded via auth wrapper in remote env)"
     echo ""
     echo "Examples:"
     echo "  $(basename "$0") start          # Start on port $DEFAULT_PORT"

@@ -370,10 +370,11 @@ When running in **Claude Code for Web** (browser-based sessions), the repository
 
 The skill then automatically:
 
-✅ **Detects the environment** - Uses official `CLAUDE_CODE_REMOTE` environment variable
-✅ **Configures proxy authentication** - Automatically starts a local proxy wrapper to handle JWT authentication
+✅ **Detects the environment** - Uses the `CLAUDE_CODE_REMOTE` and `CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE` (e.g. `cloud_default`) environment variables
+✅ **Handles certificates** - Ignores certificate errors so the egress proxy (explicit or transparent) doesn't trigger `ERR_CERT_AUTHORITY_INVALID`
+✅ **Configures proxy authentication** - When `HTTPS_PROXY` is set, starts a local proxy wrapper to handle JWT authentication
 ✅ **Enables headless mode** - Runs Chrome in headless mode (no GUI in web containers)
-✅ **Accesses external sites** - Full internet access through authenticated proxy
+✅ **Accesses external sites** - Full internet access through the egress proxy
 
 **No manual configuration needed** - the SessionStart hook installs dependencies, and the skill handles runtime configuration automatically. Simply use it normally:
 
@@ -386,8 +387,9 @@ browser = await p.chromium.launch(**config['launch_options'])
 ```
 
 **Technical Details:**
-- Detects web environments via `CLAUDE_CODE_REMOTE=true`
-- Starts local proxy wrapper on a dynamically allocated port for authentication
+- Detects remote environments via `CLAUDE_CODE_REMOTE=true` or `CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE` being set (e.g. `cloud_default`)
+- Ignores certificate errors in remote environments, since egress is proxied with a certificate Chrome cannot validate
+- When `HTTPS_PROXY` is set, starts a local proxy wrapper on a dynamically allocated port for authentication
 - Handles both CONNECT tunnels (HTTPS) and plain HTTP requests
 - Adds `Proxy-Authorization` headers automatically
 - Respects `NO_PROXY`, `HTTP_PROXY`, and `HTTPS_PROXY` environment variables

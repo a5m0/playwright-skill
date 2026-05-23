@@ -28,25 +28,44 @@ _wrapper_port = None
 _xvfb_process = None
 
 
-def is_claude_code_web_environment() -> bool:
+def is_claude_code_remote_environment() -> bool:
     """
-    Detect if running in Claude Code for Web environment.
+    Detect if running in a Claude Code remote/cloud environment (web, mobile,
+    GitHub Action, etc.).
 
-    Uses the official CLAUDE_CODE_REMOTE environment variable which is set to "true"
-    in browser-based Claude Code sessions.
+    Two signals are checked because different remote environment types expose
+    different variables:
+      - CLAUDE_CODE_REMOTE="true" — set in most remote sessions.
+      - CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE=<type> (e.g. "cloud_default") — set
+        by cloud environments that route egress through a transparent proxy and
+        may NOT set HTTPS_PROXY.
 
     Returns:
-        True if in Claude Code web environment with proxy
+        True if in any Claude Code remote environment.
     """
-    # Use official Claude Code web detection
-    is_remote = os.environ.get('CLAUDE_CODE_REMOTE') == 'true'
+    if os.environ.get('CLAUDE_CODE_REMOTE') == 'true':
+        return True
+    if os.environ.get('CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE'):
+        return True
+    return False
 
-    if not is_remote:
-        return False
 
-    # Verify proxy is configured (required for external sites)
-    proxy_env = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
-    return proxy_env is not None
+def is_claude_code_web_environment() -> bool:
+    """
+    Detect if running in a Claude Code remote environment.
+
+    Previously this required an explicit HTTPS_PROXY to be set, but cloud
+    environments (CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE=cloud_default) route egress
+    through a transparent proxy that intercepts TLS with a CA Chrome does not
+    trust, and set no HTTPS_PROXY variable. Certificate handling and headless
+    configuration must still apply there, so detection no longer depends on
+    HTTPS_PROXY — the explicit-proxy case is handled separately by
+    get_proxy_config().
+
+    Returns:
+        True if in any Claude Code remote environment.
+    """
+    return is_claude_code_remote_environment()
 
 
 def get_proxy_config():
@@ -561,27 +580,39 @@ def get_browser_config(headless=None, verbose=True, use_chrome=True):
         if verbose:
             print("   Using Chrome for improved stealth (falls back to Chromium if unavailable)")
 
-    # Check if in Claude Code web environment
-    if is_claude_code_web_environment():
+    # Check if in a Claude Code remote environment
+    if is_claude_code_remote_environment():
+        # Remote/cloud environments route egress through a proxy that Chrome
+        # cannot validate the certificate of. This takes two forms:
+        #   - Explicit authenticated proxy (HTTPS_PROXY set): forwarded through a
+        #     local auth-injecting wrapper below.
+        #   - Transparent egress proxy (cloud_default): no HTTPS_PROXY, but TLS is
+        #     intercepted with a CA Chrome does not trust.
+        # In both cases Chrome sees an untrusted cert, so ignore cert errors
+        # unconditionally — otherwise navigation fails with
+        # ERR_CERT_AUTHORITY_INVALID.
+        config['launch_options']['args'].extend([
+            '--ignore-certificate-errors',
+            '--ignore-certificate-errors-spki-list',
+        ])
+        config['context_options']['ignore_https_errors'] = True
+
         proxy_config = get_proxy_config()
 
         if proxy_config:
-            # Start proxy wrapper
+            # Start proxy wrapper to inject upstream proxy authentication
             wrapper_info = start_proxy_wrapper(proxy_config, verbose=verbose)
 
             # Configure browser to use wrapper
             config['launch_options']['proxy'] = {'server': wrapper_info['server']}
-            config['launch_options']['args'].extend([
-                '--ignore-certificate-errors',
-                '--ignore-certificate-errors-spki-list',
-            ])
-            config['context_options']['ignore_https_errors'] = True
             config['proxy_wrapper_used'] = True
 
             if verbose:
                 print("   Proxy authentication configured")
+        elif verbose:
+            print("   Transparent egress proxy detected (ignoring certificate errors)")
 
-        # Determine headless mode for web environment
+        # Determine headless mode for remote environment
         if headless is False:
             # User explicitly wants headed mode - use Xvfb for virtual display
             # Headed mode is better for anti-bot evasion (some detectors fingerprint headless)
@@ -633,6 +664,7 @@ def stop_proxy_wrapper():
 
 
 __all__ = [
+    'is_claude_code_remote_environment',
     'is_claude_code_web_environment',
     'get_proxy_config',
     'get_browser_config',
