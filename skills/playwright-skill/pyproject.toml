@@ -1,6 +1,6 @@
 [project]
 name = "patchright-skill"
-version = "5.0.1"
+version = "5.1.0"
 description = "Undetected browser automation with Patchright for Claude Code - bypasses bot detection"
 authors = [
     {name = "lackeyjb"}
