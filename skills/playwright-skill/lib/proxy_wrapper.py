@@ -567,8 +567,10 @@ def get_browser_config(headless=None, verbose=True, use_chrome=True):
         Dict with launch options and proxy config
     """
     config = {
+        # No sandbox flags needed: the driver adds --no-sandbox unless
+        # chromium_sandbox=True is passed
         'launch_options': {
-            'args': ['--no-sandbox', '--disable-setuid-sandbox']
+            'args': []
         },
         'context_options': {},
         'proxy_wrapper_used': False
@@ -604,7 +606,14 @@ def get_browser_config(headless=None, verbose=True, use_chrome=True):
             wrapper_info = start_proxy_wrapper(proxy_config, verbose=verbose)
 
             # Configure browser to use wrapper
-            config['launch_options']['proxy'] = {'server': wrapper_info['server']}
+            # The wrapper refuses NO_PROXY hosts, so Chrome must connect to them
+            # directly. Playwright forces loopback through the proxy unless it
+            # is listed explicitly.
+            bypass = ['localhost', '127.0.0.1', '[::1]', *proxy_config.get('no_proxy', [])]
+            config['launch_options']['proxy'] = {
+                'server': wrapper_info['server'],
+                'bypass': ','.join(bypass),
+            }
             config['proxy_wrapper_used'] = True
 
             if verbose:

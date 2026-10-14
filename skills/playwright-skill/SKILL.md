@@ -23,7 +23,7 @@ I'll write custom Patchright code for any automation task you request and execut
 1. **Auto-detect dev servers** - For localhost testing, ALWAYS run server detection FIRST:
 
    ```bash
-   cd $SKILL_DIR && python3 -c "from lib.helpers import detect_dev_servers_sync; import json; print(json.dumps(detect_dev_servers_sync()))"
+   PYTHONPATH="$SKILL_DIR" python3 -c "from lib.helpers import detect_dev_servers_sync; import json; print(json.dumps(detect_dev_servers_sync()))"
    ```
 
    - If **1 server found**: Use it automatically, inform user
@@ -41,7 +41,7 @@ I'll write custom Patchright code for any automation task you request and execut
 1. You describe what you want to test/automate
 2. I auto-detect running dev servers (or ask for URL if testing external site)
 3. I write custom Patchright code in `/tmp/patchright-test-*.py` (won't clutter your project)
-4. I execute it via: `cd $SKILL_DIR && python3 run.py /tmp/patchright-test-*.py`
+4. I execute it via: `python3 $SKILL_DIR/run.py /tmp/patchright-test-*.py` (from the project directory, so relative paths resolve there)
 5. Results displayed in real-time, browser window visible for debugging
 6. Test files auto-cleaned from /tmp by your OS
 
@@ -132,8 +132,7 @@ For manual scripts, call `stop_virtual_display()` when done.
 ## Setup (First Time)
 
 ```bash
-cd $SKILL_DIR
-uv pip install patchright
+uv pip install "patchright>=1.63.0" "trafilatura>=2.0.0"
 uv run patchright install chrome  # Recommended for better stealth
 # Or: uv run patchright install chromium  # Fallback option
 ```
@@ -149,7 +148,7 @@ This installs Patchright and Chrome browser. Only needed once.
 **Step 1: Detect dev servers (for localhost testing)**
 
 ```bash
-cd $SKILL_DIR && python3 -c "from lib.helpers import detect_dev_servers_sync; import json; print(json.dumps(detect_dev_servers_sync()))"
+PYTHONPATH="$SKILL_DIR" python3 -c "from lib.helpers import detect_dev_servers_sync; import json; print(json.dumps(detect_dev_servers_sync()))"
 ```
 
 **Step 2: Write test script to /tmp with URL parameter**
@@ -178,10 +177,14 @@ async def main():
 asyncio.run(main())
 ```
 
-**Step 3: Execute from skill directory**
+**Step 3: Execute via the executor**
+
+Run it from the user's project directory: scripts execute in the caller's
+working directory, so relative paths (screenshots, fixtures, output files)
+resolve against the project, while `from lib.helpers import ...` still works.
 
 ```bash
-cd $SKILL_DIR && python3 run.py /tmp/patchright-test-page.py
+python3 $SKILL_DIR/run.py /tmp/patchright-test-page.py
 ```
 
 ## Common Patterns
@@ -220,7 +223,7 @@ asyncio.run(main())
 ```python
 # /tmp/patchright-test-login.py
 import asyncio
-from patchright.async_api import async_playwright
+from patchright.async_api import async_playwright, expect
 
 TARGET_URL = 'http://localhost:3001'  # Auto-detected
 
@@ -231,12 +234,13 @@ async def main():
 
         await page.goto(f'{TARGET_URL}/login')
 
-        await page.fill('input[name="email"]', 'test@example.com')
-        await page.fill('input[name="password"]', 'password123')
-        await page.click('button[type="submit"]')
+        await page.get_by_label('Email').fill('test@example.com')
+        await page.get_by_label('Password').fill('password123')
+        await page.get_by_role('button', name='Sign in').click()
 
-        # Wait for redirect
+        # Web-first waits retry until the condition holds
         await page.wait_for_url('**/dashboard')
+        await expect(page.get_by_role('heading', name='Dashboard')).to_be_visible()
         print('✅ Login successful, redirected to dashboard')
 
         await browser.close()
@@ -249,7 +253,7 @@ asyncio.run(main())
 ```python
 # /tmp/patchright-test-form.py
 import asyncio
-from patchright.async_api import async_playwright
+from patchright.async_api import async_playwright, expect
 
 TARGET_URL = 'http://localhost:3001'  # Auto-detected
 
@@ -260,13 +264,13 @@ async def main():
 
         await page.goto(f'{TARGET_URL}/contact')
 
-        await page.fill('input[name="name"]', 'John Doe')
-        await page.fill('input[name="email"]', 'john@example.com')
-        await page.fill('textarea[name="message"]', 'Test message')
-        await page.click('button[type="submit"]')
+        await page.get_by_label('Name').fill('John Doe')
+        await page.get_by_label('Email').fill('john@example.com')
+        await page.get_by_label('Message').fill('Test message')
+        await page.get_by_role('button', name='Send').click()
 
         # Verify submission
-        await page.wait_for_selector('.success-message')
+        await expect(page.get_by_text('Thanks for your message')).to_be_visible()
         print('✅ Form submitted successfully')
 
         await browser.close()
@@ -390,20 +394,20 @@ context creation, page creation, and cleanup. Just write the core logic:
 
 ```bash
 # Fetch a page title - browser/page/cleanup all handled automatically
-cd $SKILL_DIR && python3 run.py "
+python3 $SKILL_DIR/run.py "
 await page.goto('https://example.com')
 print('Title:', await page.title())
 "
 
 # Take a screenshot
-cd $SKILL_DIR && python3 run.py "
+python3 $SKILL_DIR/run.py "
 await page.goto('http://localhost:3001')
 await page.screenshot(path='/tmp/quick-screenshot.png', full_page=True)
 print('Screenshot saved')
 "
 
 # Extract content as markdown
-cd $SKILL_DIR && python3 run.py "
+python3 $SKILL_DIR/run.py "
 await page.goto('https://example.com/article')
 content = await extract_markdown(page)
 print(content)
@@ -412,8 +416,7 @@ print(content)
 
 Available in auto-configured mode: `page`, `context`, `browser`, `config`, `p`,
 `extract_markdown`, `extract_text`, `extract_content`, `extract_with_metadata`,
-`take_screenshot`, `safe_click`, `safe_type`, `wait_for_page_ready`, `scroll_page`,
-`handle_cookie_banner`, `extract_table_data`, `helpers`.
+`take_screenshot`, `handle_cookie_banner`, `helpers`.
 
 ### Manual mode (custom browser setup)
 
@@ -422,7 +425,7 @@ instance and helpers, giving you full control:
 
 ```bash
 # Custom browser config - full control over launch options
-cd $SKILL_DIR && python3 run.py "
+python3 $SKILL_DIR/run.py "
 config = get_browser_config(headless=False)
 browser = await p.chromium.launch(**config['launch_options'])
 page = await browser.new_page()
@@ -440,7 +443,9 @@ await browser.close()
 
 ## Available Helpers
 
-Optional utility functions in `lib/helpers.py`:
+`lib/helpers.py` stays focused on setup that Patchright doesn't provide. For actions,
+waits, and retries use Patchright directly: locators (`get_by_role`, `get_by_label`,
+`get_by_text`) auto-wait and retry, and `expect(...)` assertions wait until they pass.
 
 ```python
 import sys
@@ -451,30 +456,25 @@ from lib import helpers
 servers = await helpers.detect_dev_servers()
 print('Found servers:', servers)
 
-# Launch browser with standard config
+# Environment-aware launch/context options (proxy, certs, Xvfb in web envs)
+config = helpers.get_browser_config()
+
+# Or a plain launch (PW_HEADLESS / SLOW_MO env vars respected)
 browser = await helpers.launch_browser(p)
 
-# Create context with environment headers
-context = await helpers.create_context(browser)
+# Create context with environment headers; pass a device descriptor for mobile
+context = await helpers.create_context(browser, p.devices['iPhone 15'])
 page = await context.new_page()
 
-# Safe click with retry
-await helpers.safe_click(page, 'button.submit', {'retries': 3})
-
-# Safe type with clear
-await helpers.safe_type(page, '#username', 'testuser')
-
-# Take timestamped screenshot
+# Timestamped screenshot ($PW_ARTIFACT_DIR or the system temp dir by default)
 await helpers.take_screenshot(page, 'test-result')
 
 # Handle cookie banners
 await helpers.handle_cookie_banner(page)
-
-# Extract table data
-data = await helpers.extract_table_data(page, 'table.results')
 ```
 
-See `lib/helpers.py` for full list.
+Plus the Trafilatura extraction helpers below and the persistent-session helpers.
+See `lib/helpers.py` for the full list.
 
 ## Content Extraction with Trafilatura
 
@@ -601,14 +601,14 @@ Configure custom headers for all HTTP requests via environment variables. Useful
 
 ```bash
 PW_HEADER_NAME=X-Automated-By PW_HEADER_VALUE=patchright-skill \
-  cd $SKILL_DIR && python3 run.py /tmp/my-script.py
+  python3 $SKILL_DIR/run.py /tmp/my-script.py
 ```
 
 **Multiple headers (JSON format):**
 
 ```bash
 PW_EXTRA_HEADERS='{"X-Automated-By":"patchright-skill","X-Debug":"true"}' \
-  cd $SKILL_DIR && python3 run.py /tmp/my-script.py
+  python3 $SKILL_DIR/run.py /tmp/my-script.py
 ```
 
 ### How It Works
@@ -643,19 +643,27 @@ Patchright includes patches to bypass common bot detection:
 - Don't set custom user agents or headers unless necessary
 - Use `channel="chrome"` to use system Chrome if available
 - Avoid adding automation-revealing browser arguments
-- **Never use `add_init_script()`** — it's detectable and breaks anti-bot sites (see below)
+- **Avoid `add_init_script()` on anti-bot sites** unless you have verified it's safe (see below)
 
-### CRITICAL: Never Use add_init_script() on Anti-Bot Sites
+### Use add_init_script() with Care on Anti-Bot Sites
 
-`page.add_init_script()` is itself detectable by anti-bot systems and dramatically
-reduces page functionality. Observed on sites with Cloudflare/DataDome protection:
+Patchright runs init scripts by intercepting every document request and injecting
+them into the HTML response. That interception, plus anything the script itself
+changes (prototype chains, globals, timing), is visible to a determined anti-bot
+system, so on protected sites an init script can change what the page serves you.
+On Patchright releases before 1.60 the problem was worse: an earlier observation
+recorded 6 requests and 85 DOM elements with an init script versus 33 and 508
+without, and on those releases the scripts often did not run at all.
 
-- **Without init_script**: 33 requests, 508 DOM elements, full functionality
-- **With init_script**: 6 requests, 85 DOM elements — **85% reduction**
+Init scripts run in the page's **main world**, while Patchright's `page.evaluate()`
+defaults to an isolated world. To read a global an init script set, pass
+`isolated_context=False`:
 
-Anti-bot systems detect init_script injection through modified prototype chains,
-execution timing, and Playwright bindings in the execution context. This is a
-Heisenberg-style debugging pitfall — the observation tool alters what's being observed.
+```python
+await page.add_init_script("window.__marker = 'set'")
+await page.goto(TARGET_URL)
+print(await page.evaluate("window.__marker", isolated_context=False))
+```
 
 **Safe alternatives for debugging anti-bot sites:**
 
@@ -681,9 +689,9 @@ Heisenberg-style debugging pitfall — the observation tool alters what's being 
    await client.send("Performance.enable")
    ```
 
-**Verification:** Run the same page twice — once with `add_init_script()` and once
+**Verification:** Run the same page twice, once with `add_init_script()` and once
 without. Compare request counts and DOM element counts. If they differ significantly,
-the site is detecting the injection.
+the site is detecting the injection; switch to the alternatives above.
 
 ## Persistent Chrome Session
 
@@ -741,12 +749,12 @@ async def main():
 asyncio.run(main())
 ```
 
-Run it: `cd $SKILL_DIR && python3 run.py /tmp/patchright-persistent.py`
+Run it: `python3 $SKILL_DIR/run.py /tmp/patchright-persistent.py`
 
 ### Inline usage (manual mode)
 
 ```bash
-cd $SKILL_DIR && python3 run.py "
+python3 $SKILL_DIR/run.py "
 browser = await connect_to_persistent_session(p)
 context = browser.contexts[0]
 page = context.pages[0] if context.pages else await context.new_page()
@@ -809,26 +817,27 @@ For comprehensive Patchright/Playwright API documentation, see [API_REFERENCE.md
 - **DEFAULT: Visible browser** - Always use `headless=False` unless user explicitly asks for headless mode
 - **Headless mode** - Only use `headless=True` when user specifically requests "headless" or "background" execution
 - **Slow down:** Use `slow_mo=100` to make actions visible and easier to follow
-- **Wait strategies:** Use `wait_for_url`, `wait_for_selector`, `wait_for_load_state` instead of fixed timeouts
+- **Locators first:** Prefer `get_by_role` / `get_by_label` / `get_by_text`; they auto-wait and retry
+- **Wait strategies:** Use `expect(...)` assertions, `wait_for_url`, `wait_for_load_state` instead of fixed timeouts
 - **Error handling:** Always use try-except for robust automation
 - **Console output:** Use `print()` to track progress and show what's happening
 
 ## Troubleshooting
 
-**Patchright not installed:**
+**Patchright not installed (or older than 1.63):**
 ```bash
-uv pip install patchright
-uv run patchright install chromium
+uv pip install "patchright>=1.63.0"
+uv run patchright install chrome
 ```
 
 **Module not found:**
-Ensure running from skill directory via `run.py` wrapper
+Run scripts through `python3 $SKILL_DIR/run.py`, which makes `lib/` importable from any directory
 
 **Browser doesn't open:**
 Check `headless=False` and ensure display available
 
 **Element not found:**
-Add wait: `await page.wait_for_selector('.element', timeout=10000)`
+Use a role/label locator and a web-first assertion: `await expect(page.get_by_role('button', name='Save')).to_be_visible()`
 
 **Bot detection triggered:**
 - Ensure using Patchright (not vanilla Playwright)
@@ -846,7 +855,7 @@ Claude: I'll test the marketing page across multiple viewports. Let me first det
 I found your dev server running on http://localhost:3001
 
 [Writes custom automation script to /tmp/patchright-test-marketing.py with URL parameterized]
-[Runs: cd $SKILL_DIR && python3 run.py /tmp/patchright-test-marketing.py]
+[Runs: python3 $SKILL_DIR/run.py /tmp/patchright-test-marketing.py]
 [Shows results with screenshots from /tmp/]
 ```
 
@@ -863,7 +872,7 @@ I found 2 dev servers. Which one should I test?
 User: "Use 3001"
 
 [Writes login automation to /tmp/patchright-test-login.py]
-[Runs: cd $SKILL_DIR && python3 run.py /tmp/patchright-test-login.py]
+[Runs: python3 $SKILL_DIR/run.py /tmp/patchright-test-login.py]
 [Reports: ✅ Login successful, redirected to /dashboard]
 ```
 
@@ -873,7 +882,7 @@ User: "Use 3001"
 - Not limited to pre-built scripts - any browser task possible
 - Auto-detects running dev servers to eliminate hardcoded URLs
 - Test scripts written to `/tmp` for automatic cleanup (no clutter)
-- Code executes reliably with proper module resolution via `run.py`
+- Code executes via `run.py` in your project directory, with the skill's `lib/` importable
 - Progressive disclosure - API_REFERENCE.md loaded only when advanced features needed
 - **Uses Patchright** - Undetected Playwright fork that bypasses bot detection
 - **Chromium only** - Patchright only supports Chromium-based browsers (not Firefox/WebKit)

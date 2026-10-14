@@ -461,20 +461,20 @@ It's a drop-in replacement for Playwright - just change imports from `playwright
 ## Dependencies
 
 - Python >= 3.10
-- Patchright (installed via `uv pip install patchright`)
+- Patchright 1.63+ (installed via `uv pip install "patchright>=1.63.0"`)
 - Chrome (installed via `uv run patchright install chrome`)
 
 ## Troubleshooting
 
 **Patchright not installed?**
-Navigate to the skill directory and run:
+Run:
 ```bash
-uv pip install patchright
+uv pip install "patchright>=1.63.0"
 uv run patchright install chrome
 ```
 
 **Module not found errors?**
-Ensure automation runs via `run.py`, which handles module resolution.
+Ensure automation runs via `python3 $SKILL_DIR/run.py`, which makes the skill's `lib/` importable from any directory.
 
 **Browser doesn't open?**
 Verify `headless=False` is set. The skill defaults to visible browser unless headless mode is requested.

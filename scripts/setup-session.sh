@@ -62,11 +62,10 @@ if [ -z "$SKILL_DIR" ]; then
     exit 2
 fi
 
-# Step 1: Install patchright
-# Prefer vendored patched wheel which fixes upstream PRs #96/#99:
-#   - CDN URL: playwright.azureedge.net -> cdn.playwright.dev (silent patch failure)
-#   - Init script DNS: .internal domain -> route.continue_() (navigation failure)
-# When upstream merges these PRs, remove vendor/ and revert to PyPI install.
+# Step 1: Install patchright from PyPI
+# Releases before 1.60 shipped broken init-script routing (and pre-1.59 a
+# silently unpatched driver), so anything older than the minimum is upgraded.
+PATCHRIGHT_MIN_VERSION="1.63.0"
 
 # Check if uv is available
 if ! command -v uv &> /dev/null; then
@@ -77,75 +76,37 @@ if ! command -v uv &> /dev/null; then
     }
 fi
 
-# Resolve vendor directory relative to skill dir
-# Plugin layout: vendor/ is at repo root, skill is at skills/playwright-skill/
-REPO_ROOT="$(cd "${SKILL_DIR}/../.." && pwd)"
-VENDOR_WHEEL=$(ls "${REPO_ROOT}"/vendor/patchright-*.whl 2>/dev/null | head -1)
-
-# Check if patchright is already installed from the vendor wheel.
-# We always prefer the vendor wheel since it contains critical patches.
-# If vendor wheel exists, verify install source matches; if not, reinstall.
-PATCHRIGHT_INSTALLED=false
-if python3 -c "import patchright" 2>/dev/null; then
-    if [ -n "$VENDOR_WHEEL" ]; then
-        # Check if the installed version came from our vendor wheel by looking
-        # for our patched init script behavior (route.continue_ instead of route.fallback)
-        INSTALLED_FROM_VENDOR=$(python3 -c "
-import importlib.util, pathlib
-spec = importlib.util.find_spec('patchright')
-if spec and spec.origin:
-    pkg_dir = pathlib.Path(spec.origin).parent
-    init_helper = pkg_dir / '_impl' / '_helper.py'
-    if init_helper.exists():
-        content = init_helper.read_text()
-        # Vendor wheel uses route.continue_(), PyPI uses route.fallback()
-        if 'route.continue_()' in content or 'patchright-init-script-inject.internal' not in content:
-            print('yes')
-        else:
-            print('no')
-    else:
-        print('unknown')
+PATCHRIGHT_STATUS=$(python3 -c "
+import importlib.metadata as md
+try:
+    installed = md.version('patchright')
+except md.PackageNotFoundError:
+    print('missing')
 else:
-    print('no')
-" 2>/dev/null || echo "no")
+    as_tuple = lambda v: tuple(int(x) for x in v.split('.')[:3] if x.isdigit())
+    print('ok' if as_tuple(installed) >= as_tuple('${PATCHRIGHT_MIN_VERSION}') else 'outdated')
+" 2>/dev/null || echo "missing")
 
-        if [ "$INSTALLED_FROM_VENDOR" = "yes" ]; then
-            PATCHRIGHT_INSTALLED=true
-            log_info "Patched patchright (vendor wheel) already installed"
-        else
-            log_info "patchright installed but not from vendor wheel, reinstalling with patches..."
-        fi
-    else
-        PATCHRIGHT_INSTALLED=true
-        log_info "patchright already installed (no vendor wheel available)"
-    fi
-fi
-
-# Install patchright and all other dependencies in one pass.
-if [ "$PATCHRIGHT_INSTALLED" = false ]; then
-    if [ -n "$VENDOR_WHEEL" ]; then
-        # Install vendor wheel (patched) + trafilatura together
-        log_info "Installing patched patchright from vendor wheel + dependencies..."
-        uv pip install --system "${VENDOR_WHEEL}" "trafilatura>=2.0.0" --quiet --reinstall-package patchright || {
-            log_error "Failed to install dependencies"
-            exit 2
-        }
-    else
-        log_info "No vendor wheel found, installing from PyPI (may be unpatched)..."
-        uv pip install --system patchright "trafilatura>=2.0.0" --quiet || {
-            log_error "Failed to install dependencies"
-            exit 2
-        }
-    fi
-    log_success "All dependencies installed"
-else
-    # Patchright already correct, just ensure trafilatura is present
+if [ "$PATCHRIGHT_STATUS" = "ok" ]; then
+    log_info "patchright >= ${PATCHRIGHT_MIN_VERSION} already installed"
+    # Just ensure trafilatura is present
     if ! python3 -c "import trafilatura" 2>/dev/null; then
         log_info "Installing trafilatura..."
         uv pip install --system "trafilatura>=2.0.0" --quiet || {
             log_error "Failed to install trafilatura (non-fatal)"
         }
     fi
+else
+    if [ "$PATCHRIGHT_STATUS" = "outdated" ]; then
+        log_info "patchright older than ${PATCHRIGHT_MIN_VERSION} found, upgrading..."
+    else
+        log_info "Installing patchright + dependencies..."
+    fi
+    uv pip install --system "patchright>=${PATCHRIGHT_MIN_VERSION}" "trafilatura>=2.0.0" --quiet || {
+        log_error "Failed to install dependencies"
+        exit 2
+    }
+    log_success "All dependencies installed"
 fi
 
 # Step 2: Ensure Xvfb is available (for headed mode in headless environments)
@@ -216,7 +177,7 @@ fi
 log_info "Verifying installation..."
 
 # Verify patchright can be imported
-if ! python3 -c "import patchright; v = getattr(patchright, '__version__', 'unknown'); print(f'patchright {v}')" 2>/dev/null; then
+if ! python3 -c "import patchright, importlib.metadata as md; print(f\"patchright {md.version('patchright')}\")" 2>/dev/null; then
     log_error "Failed to import patchright after installation"
     exit 2
 fi

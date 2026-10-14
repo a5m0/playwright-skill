@@ -186,19 +186,19 @@ async def launch_stealth_browser(p):
 - Avoid custom user agents unless necessary
 - Avoid custom HTTP headers unless necessary
 - Don't add automation-revealing browser arguments
-- **Never use `add_init_script()`** on anti-bot sites (see warning below)
+- **Avoid `add_init_script()`** on anti-bot sites unless verified safe (see below)
 
-### WARNING: add_init_script() Breaks Anti-Bot Sites
+### Caution: add_init_script() on Anti-Bot Sites
 
-`page.add_init_script()` is itself detectable by anti-bot systems. On sites with
-Cloudflare/DataDome/Akamai protection, init_script injection reduces page functionality
-by up to 85% (6 resource loads vs 33, 85 DOM elements vs 508).
+Patchright runs init scripts by intercepting document requests and injecting them
+into the HTML response. The interception and the script's own side effects
+(prototype chains, globals, timing) can be detected, so on protected sites an init
+script may change what the page serves you. Compare runs with and without it.
 
-Anti-bot systems detect it through modified prototype chains, execution timing, and
-Playwright bindings in the execution context. This makes it a Heisenberg-style pitfall
-where the diagnostic tool alters the behavior being observed.
+Init scripts run in the main world; `page.evaluate()` defaults to an isolated world
+in Patchright, so read their globals with `page.evaluate(..., isolated_context=False)`.
 
-**Use these non-detectable alternatives instead:**
+**Lower-risk alternatives for diagnostics:**
 
 ```python
 # Protocol-level event listeners (safest — no page injection)
@@ -217,7 +217,7 @@ await client.send("Network.enable")
 await client.send("Performance.enable")
 ```
 
-See the [SKILL.md Anti-Detection section](SKILL.md#critical-never-use-add_init_script-on-anti-bot-sites) for full details and verification steps.
+See the [SKILL.md Anti-Detection section](SKILL.md#use-add_init_script-with-care-on-anti-bot-sites) for full details and verification steps.
 
 ## Selectors & Locators
 
@@ -573,9 +573,9 @@ PWDEBUG=1 python3 your_script.py
 
 ### In-Code Debugging
 
-**WARNING:** When debugging anti-bot sites, **never use `add_init_script()`** for
-diagnostics — it's detectable and dramatically changes page behavior (up to 85% fewer
-resources loaded). Use these protocol-level alternatives instead:
+**Note:** When debugging anti-bot sites, avoid `add_init_script()` for diagnostics,
+since the injection can be detected and change page behavior. Use these
+protocol-level alternatives instead:
 
 ```python
 # Pause execution (opens inspector)
