@@ -18,7 +18,7 @@ This repository is configured with a **SessionStart hook** that automatically ru
 When you start a session in Claude Code on the web, the setup hook:
 
 1. ✅ **Detects the environment** - Identifies if running locally or in the web
-2. ✅ **Installs patchright** - Uses `uv pip install patchright` for fast installation
+2. ✅ **Installs patchright** - Uses `uv pip install "patchright>=1.63.0"` (upgrades older installs)
 3. ✅ **Installs Chrome browser** - Runs `uv run patchright install chrome` for browser binaries
 4. ✅ **Configures Python path** - Adds skill directory to `PYTHONPATH`
 5. ✅ **Persists environment** - Sets `CHROME_EXECUTABLE` and other variables for the session
@@ -42,7 +42,7 @@ If you're working locally and want to set up manually:
 cd skills/playwright-skill
 
 # Install patchright
-uv pip install patchright
+uv pip install "patchright>=1.63.0" "trafilatura>=2.0.0"
 
 # Install Chrome browser
 uv run patchright install chrome
@@ -67,12 +67,16 @@ playwright-skill/                    # Plugin root
 │       ├── API_REFERENCE.md        # Full Playwright/Patchright API docs
 │       ├── run.py                  # Universal executor
 │       ├── pyproject.toml          # Python dependencies
-│       └── lib/
-│           ├── __init__.py
-│           └── helpers.py          # Utility functions
+│       ├── lib/
+│       │   ├── __init__.py
+│       │   ├── helpers.py          # Utility functions
+│       │   ├── proxy_wrapper.py    # Proxy auth, cert handling, Xvfb
+│       │   └── persistent_session.py
+│       └── tests/                  # pytest suite (run in CI)
 ├── .github/
 │   └── workflows/
 │       ├── release.yml             # Automated releases on tags
+│       ├── test.yml                # pytest suite incl. real-Chrome smoke tests
 │       └── version-check.yml       # Version consistency validation
 ├── CLAUDE.md                       # This file - repo documentation for Claude
 ├── README.md                       # User-facing documentation
@@ -95,7 +99,7 @@ When you ask Claude to perform browser automation tasks, Claude:
 1. **Discovers the skill** - Finds `skills/playwright-skill/SKILL.md`
 2. **Reads instructions** - Loads the skill documentation
 3. **Writes custom code** - Creates automation scripts in `/tmp/`
-4. **Executes via run.py** - Runs scripts with proper module resolution
+4. **Executes via run.py** - Runs scripts in the caller's working directory with the skill's `lib/` importable
 5. **Returns results** - Shows console output and screenshots
 
 Example tasks:
@@ -109,9 +113,11 @@ Example tasks:
 ### Making Changes
 
 1. Edit skill files in `skills/playwright-skill/`
-2. Test with Claude Code locally or in web
-3. Commit changes with descriptive messages
-4. Create pull request
+2. Run the tests: `cd skills/playwright-skill && python3 -m pytest tests`
+   (browser smoke tests skip when Chrome can't launch; set `REQUIRE_BROWSER=1` to fail instead)
+3. Test with Claude Code locally or in web
+4. Commit changes with descriptive messages
+5. Create pull request
 
 ### Version Management
 

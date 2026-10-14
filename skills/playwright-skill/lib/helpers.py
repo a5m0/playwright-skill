@@ -5,6 +5,7 @@ import os
 import json
 import asyncio
 import socket
+import tempfile
 from typing import Optional, List, Dict, Any
 
 
@@ -41,29 +42,31 @@ async def launch_browser(playwright, browser_type: str = 'chromium', options: Di
     Launch browser with standard configuration.
     Note: Patchright only supports Chromium-based browsers.
 
+    For Claude Code web environments (proxy, certificates, Xvfb), prefer
+    get_browser_config(), which handles all of that automatically.
+
     Args:
         playwright: The async_playwright instance
         browser_type: 'chromium' (firefox/webkit not supported in patchright)
-        options: Additional launch options
+        options: Additional launch options (override the defaults)
     """
     if options is None:
         options = {}
 
-    # For maximum stealth, patchright recommends:
-    # - headless: False
-    # - channel: "chrome" (if available)
-    # - no_viewport: True (for persistent contexts)
-    default_options = {
-        'headless': os.environ.get('HEADLESS', 'false').lower() != 'true',
-        'slow_mo': int(os.environ.get('SLOW_MO', '0')),
-        'args': ['--no-sandbox', '--disable-setuid-sandbox']
-    }
-
     if browser_type != 'chromium':
         print(f"⚠️ Warning: Patchright only supports Chromium. Using chromium instead of {browser_type}")
 
-    merged_options = {**default_options, **options}
-    return await playwright.chromium.launch(**merged_options)
+    # Empty values count as unset; anything but 'false' means headless
+    headless_value = os.environ.get('PW_HEADLESS') or os.environ.get('HEADLESS') or 'false'
+    # No sandbox flags needed: the driver adds --no-sandbox unless
+    # chromium_sandbox=True is passed
+    launch_options = {
+        'headless': headless_value.lower() != 'false',
+        'slow_mo': int(os.environ.get('SLOW_MO') or 0),
+        **options,
+    }
+
+    return await playwright.chromium.launch(**launch_options)
 
 
 async def create_context(browser, options: Dict[str, Any] = None):
@@ -71,273 +74,65 @@ async def create_context(browser, options: Dict[str, Any] = None):
     Create browser context with common settings.
     Automatically merges environment headers.
 
+    For mobile emulation, pass a device descriptor:
+        create_context(browser, p.devices['iPhone 15'])
+
     Args:
         browser: Browser instance
-        options: Context options
+        options: Context options (override the defaults)
     """
     if options is None:
         options = {}
 
-    env_headers = get_extra_headers_from_env()
-
-    # Merge environment headers with any passed in options
-    merged_headers = {}
-    if env_headers:
-        merged_headers.update(env_headers)
-    if options.get('extra_http_headers'):
-        merged_headers.update(options['extra_http_headers'])
-
-    default_options = {
+    headers = {**(get_extra_headers_from_env() or {}), **options.get('extra_http_headers', {})}
+    context_options = {
         'viewport': {'width': 1280, 'height': 720},
-        'locale': options.get('locale', 'en-US'),
-        'timezone_id': options.get('timezone_id', 'America/New_York'),
+        'locale': 'en-US',
+        'timezone_id': 'America/New_York',
+        **options,
     }
+    if headers:
+        context_options['extra_http_headers'] = headers
 
-    if options.get('mobile'):
-        default_options['user_agent'] = (
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) '
-            'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1'
-        )
-
-    if options.get('permissions'):
-        default_options['permissions'] = options['permissions']
-
-    if options.get('geolocation'):
-        default_options['geolocation'] = options['geolocation']
-
-    # Only include extra_http_headers if we have any
-    if merged_headers:
-        default_options['extra_http_headers'] = merged_headers
-
-    # Remove custom keys before merging
-    clean_options = {k: v for k, v in options.items()
-                     if k not in ('mobile', 'permissions', 'geolocation', 'locale', 'timezone_id')}
-
-    return await browser.new_context(**{**default_options, **clean_options})
-
-
-async def wait_for_page_ready(page, options: Dict[str, Any] = None):
-    """
-    Smart wait for page to be ready.
-
-    Args:
-        page: Patchright page
-        options: Wait options (wait_until, timeout, wait_for_selector)
-    """
-    if options is None:
-        options = {}
-
-    wait_until = options.get('wait_until', 'networkidle')
-    timeout = options.get('timeout', 30000)
-
-    try:
-        await page.wait_for_load_state(wait_until, timeout=timeout)
-    except Exception:
-        print("Page load timeout, continuing...")
-
-    # Additional wait for dynamic content if selector provided
-    if options.get('wait_for_selector'):
-        await page.wait_for_selector(options['wait_for_selector'], timeout=timeout)
-
-
-async def safe_click(page, selector: str, options: Dict[str, Any] = None) -> bool:
-    """
-    Safe click with retry logic.
-
-    Args:
-        page: Patchright page
-        selector: Element selector
-        options: Click options (retries, retry_delay, timeout, force)
-    """
-    if options is None:
-        options = {}
-
-    max_retries = options.get('retries', 3)
-    retry_delay = options.get('retry_delay', 1000)
-    timeout = options.get('timeout', 5000)
-    force = options.get('force', False)
-
-    for i in range(max_retries):
-        try:
-            await page.wait_for_selector(selector, state='visible', timeout=timeout)
-            await page.click(selector, force=force, timeout=timeout)
-            return True
-        except Exception as e:
-            if i == max_retries - 1:
-                print(f"Failed to click {selector} after {max_retries} attempts")
-                raise e
-            print(f"Retry {i + 1}/{max_retries} for clicking {selector}")
-            await asyncio.sleep(retry_delay / 1000)
-
-    return False
-
-
-async def safe_type(page, selector: str, text: str, options: Dict[str, Any] = None):
-    """
-    Safe text input with clear before type.
-
-    Args:
-        page: Patchright page
-        selector: Input selector
-        text: Text to type
-        options: Type options (timeout, clear, slow, delay)
-    """
-    if options is None:
-        options = {}
-
-    timeout = options.get('timeout', 10000)
-
-    await page.wait_for_selector(selector, state='visible', timeout=timeout)
-
-    if options.get('clear', True):
-        await page.fill(selector, '')
-
-    if options.get('slow'):
-        await page.type(selector, text, delay=options.get('delay', 100))
-    else:
-        await page.fill(selector, text)
-
-
-async def extract_texts(page, selector: str) -> List[str]:
-    """
-    Extract text from multiple elements.
-
-    Args:
-        page: Patchright page
-        selector: Elements selector
-    """
-    await page.wait_for_selector(selector, timeout=10000)
-    elements = await page.query_selector_all(selector)
-    texts = []
-    for el in elements:
-        text = await el.text_content()
-        if text:
-            texts.append(text.strip())
-    return [t for t in texts if t]
+    return await browser.new_context(**context_options)
 
 
 async def take_screenshot(page, name: str, options: Dict[str, Any] = None) -> str:
     """
-    Take screenshot with timestamp.
+    Take a full-page screenshot with a timestamped filename.
+
+    Saved to options['path'] if given, otherwise to options['directory'],
+    $PW_ARTIFACT_DIR, or the system temp directory (in that order).
 
     Args:
         page: Patchright page
-        name: Screenshot name
-        options: Screenshot options (full_page, path)
+        name: Screenshot name prefix
+        options: path, directory, plus any page.screenshot() options
     """
-    if options is None:
-        options = {}
+    options = dict(options or {})
+    filename = options.pop('path', None)
+    directory = options.pop('directory', None)
 
-    from datetime import datetime
-    timestamp = datetime.now().isoformat().replace(':', '-').replace('.', '-')
-    filename = options.get('path', f"{name}-{timestamp}.png")
+    if not filename:
+        from datetime import datetime
+        output_dir = directory or os.environ.get('PW_ARTIFACT_DIR') or tempfile.gettempdir()
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().isoformat().replace(':', '-').replace('.', '-')
+        filename = os.path.join(output_dir, f"{name}-{timestamp}.png")
 
-    await page.screenshot(
-        path=filename,
-        full_page=options.get('full_page', True)
-    )
+    await page.screenshot(path=filename, **{'full_page': True, **options})
 
     print(f"Screenshot saved: {filename}")
     return filename
 
 
-async def authenticate(page, credentials: Dict[str, str], selectors: Dict[str, str] = None):
-    """
-    Handle authentication.
-
-    Args:
-        page: Patchright page
-        credentials: Dict with 'username' and 'password'
-        selectors: Login form selectors (username, password, submit, success_indicator)
-    """
-    default_selectors = {
-        'username': 'input[name="username"], input[name="email"], #username, #email',
-        'password': 'input[name="password"], #password',
-        'submit': 'button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign in")'
-    }
-
-    final_selectors = {**default_selectors, **(selectors or {})}
-
-    await safe_type(page, final_selectors['username'], credentials['username'])
-    await safe_type(page, final_selectors['password'], credentials['password'])
-    await safe_click(page, final_selectors['submit'])
-
-    # Wait for navigation or success indicator
-    success_selector = (selectors or {}).get('success_indicator', '.dashboard, .user-menu, .logout')
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(
-                page.wait_for_url('**/*', wait_until='networkidle'),
-                return_exceptions=True
-            ),
-            timeout=10
-        )
-    except asyncio.TimeoutError:
-        print("Login might have completed without navigation")
-
-
-async def scroll_page(page, direction: str = 'down', distance: int = 500):
-    """
-    Scroll page.
-
-    Args:
-        page: Patchright page
-        direction: 'down', 'up', 'top', 'bottom'
-        distance: Pixels to scroll (for up/down)
-    """
-    if direction == 'down':
-        await page.evaluate(f'window.scrollBy(0, {distance})')
-    elif direction == 'up':
-        await page.evaluate(f'window.scrollBy(0, -{distance})')
-    elif direction == 'top':
-        await page.evaluate('window.scrollTo(0, 0)')
-    elif direction == 'bottom':
-        await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-
-    await asyncio.sleep(0.5)  # Wait for scroll animation
-
-
-async def extract_table_data(page, table_selector: str) -> Optional[Dict[str, Any]]:
-    """
-    Extract table data.
-
-    Args:
-        page: Patchright page
-        table_selector: Table selector
-    """
-    await page.wait_for_selector(table_selector)
-
-    return await page.evaluate('''(selector) => {
-        const table = document.querySelector(selector);
-        if (!table) return null;
-
-        const headers = Array.from(table.querySelectorAll('thead th')).map(th =>
-            th.textContent?.trim()
-        );
-
-        const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr => {
-            const cells = Array.from(tr.querySelectorAll('td'));
-            if (headers.length > 0) {
-                return cells.reduce((obj, cell, index) => {
-                    obj[headers[index] || `column_${index}`] = cell.textContent?.trim();
-                    return obj;
-                }, {});
-            } else {
-                return cells.map(cell => cell.textContent?.trim());
-            }
-        });
-
-        return { headers, rows };
-    }''', table_selector)
-
-
 async def handle_cookie_banner(page, timeout: int = 3000) -> bool:
     """
-    Wait for and dismiss cookie banners.
+    Dismiss a cookie banner if one of the common accept buttons is visible.
 
     Args:
         page: Patchright page
-        timeout: Max time to wait
+        timeout: Total time budget in milliseconds
     """
     common_selectors = [
         'button:has-text("Accept")',
@@ -354,45 +149,16 @@ async def handle_cookie_banner(page, timeout: int = 3000) -> bool:
 
     for selector in common_selectors:
         try:
-            element = await page.wait_for_selector(
-                selector,
-                timeout=selector_timeout,
-                state='visible'
-            )
-            if element:
-                await element.click()
-                print("Cookie banner dismissed")
-                return True
+            await page.locator(selector).filter(visible=True).first.click(timeout=selector_timeout)
+            print("Cookie banner dismissed")
+            return True
         except Exception:
             continue
 
     return False
 
 
-async def retry_with_backoff(fn, max_retries: int = 3, initial_delay: float = 1.0):
-    """
-    Retry a function with exponential backoff.
-
-    Args:
-        fn: Async function to retry
-        max_retries: Maximum retry attempts
-        initial_delay: Initial delay in seconds
-    """
-    last_error = None
-
-    for i in range(max_retries):
-        try:
-            return await fn()
-        except Exception as error:
-            last_error = error
-            delay = initial_delay * (2 ** i)
-            print(f"Attempt {i + 1} failed, retrying in {delay}s...")
-            await asyncio.sleep(delay)
-
-    raise last_error
-
-
-async def detect_dev_servers(custom_ports: List[int] = None) -> List[str]:
+def detect_dev_servers_sync(custom_ports: List[int] = None) -> List[str]:
     """
     Detect running dev servers on common ports.
 
@@ -405,9 +171,8 @@ async def detect_dev_servers(custom_ports: List[int] = None) -> List[str]:
     if custom_ports is None:
         custom_ports = []
 
-    # Common dev server ports
     common_ports = [3000, 3001, 3002, 5173, 8080, 8000, 4200, 5000, 9000, 1234]
-    all_ports = list(set(common_ports + custom_ports))
+    all_ports = sorted(set(common_ports + custom_ports))
 
     detected_servers = []
 
@@ -415,15 +180,10 @@ async def detect_dev_servers(custom_ports: List[int] = None) -> List[str]:
 
     for port in all_ports:
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.5)
-            result = sock.connect_ex(('localhost', port))
-            sock.close()
-
-            if result == 0:
+            with socket.create_connection(('localhost', port), timeout=0.5):
                 detected_servers.append(f"http://localhost:{port}")
                 print(f"  ✅ Found server on port {port}")
-        except Exception:
+        except OSError:
             continue
 
     if not detected_servers:
@@ -432,44 +192,9 @@ async def detect_dev_servers(custom_ports: List[int] = None) -> List[str]:
     return detected_servers
 
 
-# Synchronous version of detect_dev_servers for CLI usage
-def detect_dev_servers_sync(custom_ports: List[int] = None) -> List[str]:
-    """
-    Detect running dev servers on common ports (synchronous version).
-
-    Args:
-        custom_ports: Additional ports to check
-
-    Returns:
-        List of detected server URLs
-    """
-    if custom_ports is None:
-        custom_ports = []
-
-    common_ports = [3000, 3001, 3002, 5173, 8080, 8000, 4200, 5000, 9000, 1234]
-    all_ports = list(set(common_ports + custom_ports))
-
-    detected_servers = []
-
-    print("🔍 Checking for running dev servers...")
-
-    for port in all_ports:
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.5)
-            result = sock.connect_ex(('localhost', port))
-            sock.close()
-
-            if result == 0:
-                detected_servers.append(f"http://localhost:{port}")
-                print(f"  ✅ Found server on port {port}")
-        except Exception:
-            continue
-
-    if not detected_servers:
-        print("  ❌ No dev servers detected")
-
-    return detected_servers
+async def detect_dev_servers(custom_ports: List[int] = None) -> List[str]:
+    """Async wrapper around detect_dev_servers_sync()."""
+    return await asyncio.to_thread(detect_dev_servers_sync, custom_ports)
 
 
 async def extract_content(
@@ -648,7 +373,7 @@ except ImportError:
 
     def get_browser_config(headless=None, verbose=True, use_chrome=True):
         config = {
-            'launch_options': {'args': ['--no-sandbox', '--disable-setuid-sandbox']},
+            'launch_options': {'args': []},
             'context_options': {},
             'proxy_wrapper_used': False,
             'xvfb_used': False
@@ -684,16 +409,8 @@ __all__ = [
     'get_extra_headers_from_env',
     'launch_browser',
     'create_context',
-    'wait_for_page_ready',
-    'safe_click',
-    'safe_type',
-    'extract_texts',
     'take_screenshot',
-    'authenticate',
-    'scroll_page',
-    'extract_table_data',
     'handle_cookie_banner',
-    'retry_with_backoff',
     'detect_dev_servers',
     'detect_dev_servers_sync',
     'extract_content',

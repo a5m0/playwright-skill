@@ -267,9 +267,12 @@ cmd_start() {
         --no-first-run
         --no-default-browser-check
         --disable-features=TranslateUI
-        --no-sandbox
-        --disable-setuid-sandbox
     )
+
+    # Chrome refuses to start as root with its sandbox on, so only disable it there
+    if [[ "$EUID" -eq 0 ]]; then
+        chrome_args+=(--no-sandbox --disable-setuid-sandbox)
+    fi
 
     if [[ "$use_headless" == "true" ]]; then
         chrome_args+=(--headless=new)

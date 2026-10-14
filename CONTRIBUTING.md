@@ -40,8 +40,11 @@ Enhancement suggestions are welcome! Please:
 
 4. **Test your changes**
    ```bash
-   npm run setup
-   # Test your changes with Claude Code
+   cd skills/playwright-skill
+   uv pip install "patchright>=1.63.0" "trafilatura>=2.0.0" pytest
+   uv run patchright install chrome
+   python3 -m pytest tests   # CI runs this with REQUIRE_BROWSER=1
+   # Then test your changes with Claude Code
    ```
 
 5. **Commit your changes**
@@ -123,7 +126,7 @@ When adding functions to `lib/helpers.js`:
 Before submitting:
 1. Test with a fresh installation
 2. Verify examples in SKILL.md work
-3. Check that `run.js` handles edge cases
+3. Check that `run.py` handles edge cases
 4. Ensure browser opens in visible mode by default
 
 ## Questions?

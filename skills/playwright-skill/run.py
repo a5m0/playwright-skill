@@ -6,7 +6,8 @@ Executes Patchright automation code from:
 - Inline code: python run.py 'await page.goto("...")'
 - Stdin: cat script.py | python run.py
 
-Ensures proper module resolution by running from skill directory.
+Scripts run in the caller's working directory, so relative paths resolve
+against the user's project; the skill's lib/ package stays importable.
 Uses Patchright (undetected Playwright fork) for anti-bot evasion.
 """
 
@@ -17,22 +18,29 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Change to skill directory for proper module resolution
 SKILL_DIR = Path(__file__).parent.resolve()
-os.chdir(SKILL_DIR)
 
 # Add skill directory to Python path
 sys.path.insert(0, str(SKILL_DIR))
 
+# Older releases shipped broken init-script routing; keep in sync with
+# pyproject.toml and scripts/setup-session.sh
+PATCHRIGHT_MIN_VERSION = "1.63.0"
+
+
+def _version_tuple(version):
+    return tuple(int(part) for part in version.split(".")[:3] if part.isdigit())
+
 
 def check_patchright_installed():
-    """Check if Patchright is installed"""
-    try:
-        import patchright
+    """Check if a recent enough Patchright is installed"""
+    from importlib import metadata
 
-        return True
-    except ImportError:
+    try:
+        installed = metadata.version("patchright")
+    except metadata.PackageNotFoundError:
         return False
+    return _version_tuple(installed) >= _version_tuple(PATCHRIGHT_MIN_VERSION)
 
 
 def is_uv_available():
@@ -44,54 +52,29 @@ def is_uv_available():
         return False
 
 
-def find_vendor_wheel():
-    """Find vendored patched patchright wheel if available."""
-    vendor_dir = SKILL_DIR.parent.parent / "vendor"
-    if vendor_dir.is_dir():
-        wheels = list(vendor_dir.glob("patchright-*.whl"))
-        if wheels:
-            return str(wheels[0])
-    return None
-
-
 def install_patchright():
-    """Install Patchright if missing. Prefers vendored wheel, then uv, then pip."""
-    print("📦 Patchright not found. Installing...")
+    """Install or upgrade Patchright and Chrome. Prefers uv, then pip."""
+    print(f"📦 Patchright >= {PATCHRIGHT_MIN_VERSION} not found. Installing...")
 
     use_uv = is_uv_available()
-    vendor_wheel = find_vendor_wheel()
+    requirement = f"patchright>={PATCHRIGHT_MIN_VERSION}"
 
     try:
-        if vendor_wheel:
-            print("  Installing patched patchright from vendor wheel...")
-            installer_args = (
-                ["uv", "pip", "install", "--system", vendor_wheel, "--reinstall"]
-                if use_uv
-                else [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    vendor_wheel,
-                    "--force-reinstall",
-                ]
-            )
-            subprocess.run(installer_args, check=True, cwd=SKILL_DIR)
-        elif use_uv:
-            print("  Using uv for installation (no vendor wheel, may be unpatched)...")
+        if use_uv:
+            print("  Using uv for installation...")
             subprocess.run(
-                ["uv", "pip", "install", "--system", "patchright"], check=True, cwd=SKILL_DIR
+                ["uv", "pip", "install", "--system", requirement], check=True, cwd=SKILL_DIR
             )
         else:
-            print("  Using pip for installation (no vendor wheel, may be unpatched)...")
+            print("  Using pip for installation...")
             subprocess.run(
-                [sys.executable, "-m", "pip", "install", "patchright"],
+                [sys.executable, "-m", "pip", "install", requirement],
                 check=True,
                 cwd=SKILL_DIR,
             )
 
         subprocess.run(
-            [sys.executable, "-m", "patchright", "install", "chromium"],
+            [sys.executable, "-m", "patchright", "install", "chrome"],
             check=True,
             cwd=SKILL_DIR,
         )
@@ -101,7 +84,7 @@ def install_patchright():
         print(f"❌ Failed to install Patchright: {e}")
         installer = "uv pip" if use_uv else "pip"
         print(
-            f"Please run manually: {installer} install patchright && uv run patchright install chromium"
+            f"Please run manually: {installer} install '{requirement}' && python3 -m patchright install chrome"
         )
         return False
 
@@ -222,8 +205,7 @@ from lib import helpers
 from lib.helpers import (
     get_browser_config, extract_markdown, extract_text,
     extract_with_metadata, extract_content, take_screenshot,
-    safe_click, safe_type, wait_for_page_ready, scroll_page,
-    handle_cookie_banner, extract_table_data, stop_virtual_display,
+    handle_cookie_banner, stop_virtual_display,
 )
 
 async def main():
@@ -359,9 +341,11 @@ def main():
         with open(temp_file, "w") as f:
             f.write(code)
 
-        # Execute the code
+        # Execute the code in the caller's working directory so relative paths
+        # resolve against the user's project. The temp file lives in SKILL_DIR,
+        # which puts the skill's lib/ package on the script's import path.
         print("🚀 Starting automation...\n")
-        result = subprocess.run([sys.executable, str(temp_file)], cwd=SKILL_DIR)
+        result = subprocess.run([sys.executable, str(temp_file)])
         sys.exit(result.returncode)
 
     except Exception as error:

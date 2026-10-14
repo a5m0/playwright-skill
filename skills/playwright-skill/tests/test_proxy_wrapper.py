@@ -355,7 +355,11 @@ class TestGetBrowserConfig:
             assert cfg["launch_options"]["headless"] is True
 
     def test_explicit_proxy_starts_wrapper_and_ignores_certs(self):
-        env = {"CLAUDE_CODE_REMOTE": "true", "HTTPS_PROXY": "http://u:p@proxy:8080"}
+        env = {
+            "CLAUDE_CODE_REMOTE": "true",
+            "HTTPS_PROXY": "http://u:p@proxy:8080",
+            "NO_PROXY": "internal.example.com",
+        }
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch(
                     "lib.proxy_wrapper.start_proxy_wrapper",
@@ -365,7 +369,12 @@ class TestGetBrowserConfig:
             assert "--ignore-certificate-errors" in cfg["launch_options"]["args"]
             assert cfg["context_options"].get("ignore_https_errors") is True
             assert cfg["proxy_wrapper_used"] is True
-            assert cfg["launch_options"]["proxy"] == {"server": "http://127.0.0.1:5555"}
+            proxy = cfg["launch_options"]["proxy"]
+            assert proxy["server"] == "http://127.0.0.1:5555"
+            # The wrapper refuses bypassed hosts, so Chrome must skip it for them
+            assert proxy["bypass"].split(",") == [
+                "localhost", "127.0.0.1", "[::1]", "internal.example.com",
+            ]
 
     def test_local_env_no_cert_handling(self):
         with mock.patch.dict(os.environ, {}, clear=True):
