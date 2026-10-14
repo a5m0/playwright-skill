@@ -4,6 +4,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -56,6 +57,22 @@ class TestWrapCodeIfNeeded:
         wrapped = wrap_code_if_needed("from patchright.async_api import async_playwright\nprint('hi')")
         assert "async def main():" in wrapped
         compile(wrapped, "<wrapped>", "exec")
+
+
+class TestInstallPatchright:
+    @pytest.mark.parametrize("use_uv", [True, False])
+    def test_installs_into_running_interpreter(self, use_uv):
+        with mock.patch("run.is_uv_available", return_value=use_uv), \
+                mock.patch("run.subprocess.run") as fake_run:
+            assert run.install_patchright() is True
+        install_cmd = fake_run.call_args_list[0].args[0]
+        # Never the system Python: an active venv must get the packages
+        assert "--system" not in install_cmd
+        assert sys.executable in install_cmd
+        assert f"patchright>={run.PATCHRIGHT_MIN_VERSION}" in install_cmd
+        browser_cmd = fake_run.call_args_list[1].args[0]
+        assert browser_cmd[0] == sys.executable
+        assert browser_cmd[-1] == "chrome"
 
 
 @pytest.fixture

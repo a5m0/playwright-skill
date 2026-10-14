@@ -57,18 +57,22 @@ def install_patchright():
     print(f"📦 Patchright >= {PATCHRIGHT_MIN_VERSION} not found. Installing...")
 
     use_uv = is_uv_available()
-    requirement = f"patchright>={PATCHRIGHT_MIN_VERSION}"
+    requirements = [f"patchright>={PATCHRIGHT_MIN_VERSION}", "trafilatura>=2.0.0"]
 
     try:
+        # Install into the interpreter running this script (which also runs the
+        # user's code), not the system Python, so an active venv works
         if use_uv:
             print("  Using uv for installation...")
             subprocess.run(
-                ["uv", "pip", "install", "--system", requirement], check=True, cwd=SKILL_DIR
+                ["uv", "pip", "install", "--python", sys.executable, *requirements],
+                check=True,
+                cwd=SKILL_DIR,
             )
         else:
             print("  Using pip for installation...")
             subprocess.run(
-                [sys.executable, "-m", "pip", "install", requirement],
+                [sys.executable, "-m", "pip", "install", *requirements],
                 check=True,
                 cwd=SKILL_DIR,
             )
@@ -84,7 +88,7 @@ def install_patchright():
         print(f"❌ Failed to install Patchright: {e}")
         installer = "uv pip" if use_uv else "pip"
         print(
-            f"Please run manually: {installer} install '{requirement}' && python3 -m patchright install chrome"
+            f"Please run manually: {installer} install '{requirements[0]}' && python3 -m patchright install chrome"
         )
         return False
 
